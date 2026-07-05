@@ -6,6 +6,11 @@ from __future__ import annotations
 
 import os
 
+from dotenv import load_dotenv
+
+# Load .env BEFORE reading any variable, regardless of import order elsewhere.
+load_dotenv()
+
 
 def _b(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
@@ -19,8 +24,10 @@ class Settings:
     # --- redis: queue broker + live pub/sub + cache ---
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-    # --- vector store: persistent paper/RAG corpus ---
-    qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    # --- vector store: Qdrant Cloud (endpoint + key) or local Docker (no key) ---
+    qdrant_url: str = (os.getenv("QDRANT_CLUSTER_ENDPOINT", "").strip()
+                       or os.getenv("QDRANT_URL", "http://localhost:6333"))
+    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "").strip()
 
     # --- object storage: artifacts (charts/manifests); local disk when unset ---
     s3_bucket: str = os.getenv("ARTIFACT_S3_BUCKET", "").strip()       # bucket enables S3

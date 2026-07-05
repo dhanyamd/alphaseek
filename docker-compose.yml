@@ -36,6 +36,17 @@ services:
     ports: ["6333:6333"]
     volumes: ["qdrant-data:/qdrant/storage"]
 
+  # LLM gateway: one OpenAI-compatible endpoint with routing/failover/cost tracking.
+  # Point the app at it via LLM_BASE_URL=http://localhost:4000.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports: ["4000:4000"]
+    volumes: ["./litellm-config.yaml:/app/config.yaml:ro"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
 volumes:
   redis-data:
   pg-data:

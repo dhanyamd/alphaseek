@@ -13,23 +13,24 @@ import asyncio
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from app import db
+from app import bus, storage
+from app import store as db          # SQLite or Postgres, chosen by DATABASE_URL
 from app.agent.llm import get_llm
 from app.agent.orchestrator import research
 from app.quant.dataset import dataset_meta, dataset_status, ensure_dataset_async
+from app.settings import settings
 
 UPLOAD_ROOT = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_ROOT.mkdir(exist_ok=True)
 
 load_dotenv()
 db.init_db()
-with db._conn() as _c:   # a restart orphans daemon workers — close out stale runs
-    _c.execute("UPDATE sessions SET status='done' WHERE status='running'")
+db.close_stale_runs()    # a restart orphans daemon workers — close out stale runs
 ensure_dataset_async()   # build the real market cache if missing
 
 _RUNNING: set[int] = set()
@@ -100,13 +101,15 @@ def manual_run(session_id: int, body: RunIn) -> dict:
 
 @app.get("/api/artifacts/{name}")
 def artifact(name: str):
-    """Serve a chart/artifact produced by an agent's script."""
-    from fastapi.responses import FileResponse
-
-    from app.quant.docker_sandbox import ARTIFACT_STORE
+    """Serve a chart/artifact. Redirects to a presigned S3 URL when configured,
+    else serves the local copy."""
+    from fastapi.responses import FileResponse, RedirectResponse
 
     safe = Path(name).name                      # no path traversal
-    path = ARTIFACT_STORE / safe
+    s3_url = storage.url(safe)
+    if s3_url:
+        return RedirectResponse(s3_url)
+    path = storage.local_path(safe)
     if not path.is_file():
         return {"error": "not found"}
     return FileResponse(path)
@@ -189,6 +192,7 @@ async def stream(session_id: int, prompt: str | None = None):
                                   uploads_dir=sdir if upload_names else None,
                                   uploads=[f"/uploads/{n}" for n in upload_names]):
                 db.append_event(session_id, event)
+                bus.publish(session_id, event)      # live fan-out (best-effort)
                 if event["type"] == "done":
                     best = event.get("best")
         except Exception as e:  # noqa: BLE001 — surface crashes to the UI
@@ -217,3 +221,32 @@ async def stream(session_id: int, prompt: str | None = None):
         yield {"data": json.dumps({"type": "close"})}
 
     return EventSourceResponse(gen())
+
+
+@app.websocket("/api/sessions/{session_id}/ws")
+async def stream_ws(websocket: WebSocket, session_id: int):
+    """WebSocket transport for the live event stream. Replays the stored history,
+    then tails the Redis bus (or the DB if the bus is off) — refresh-proof."""
+    await websocket.accept()
+    last = 0
+    try:
+        for eid, ev in db.events_after(session_id, 0):   # replay history
+            last = eid
+            await websocket.send_json(ev)
+        if settings.use_redis_bus:
+            for ev in bus.subscribe(session_id):         # live via Redis pub/sub
+                await websocket.send_json(ev)
+                if ev.get("type") in ("done", "close"):
+                    break
+        else:
+            while True:                                  # live via DB tail
+                rows = await asyncio.to_thread(db.events_after, session_id, last)
+                for eid, ev in rows:
+                    last = eid
+                    await websocket.send_json(ev)
+                if not rows and session_id not in _RUNNING:
+                    break
+                await asyncio.sleep(0.3)
+        await websocket.send_json({"type": "close"})
+    except WebSocketDisconnect:
+        return

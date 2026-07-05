@@ -41,6 +41,12 @@ def init_db() -> None:
         )
 
 
+def close_stale_runs() -> None:
+    """A restart orphans daemon workers — mark any 'running' session done."""
+    with _conn() as c:
+        c.execute("UPDATE sessions SET status='done' WHERE status='running'")
+
+
 def ensure_user(name: str) -> None:
     with _conn() as c:
         c.execute("INSERT OR IGNORE INTO users(name, created) VALUES(?,?)", (name, time.time()))

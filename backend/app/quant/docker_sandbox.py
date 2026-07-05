@@ -94,13 +94,14 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
             raise FactorError(f"{err}\n--- script output ---\n{tail}" if tail else err)
         result.setdefault("submitted", True)
 
-        # persist artifacts with unique names the API can serve
+        # persist artifacts with unique names the API can serve (local + S3 if set)
+        from app import storage
         stored = []
         for fn in result.get("artifacts", []):
             src = out / fn
             if src.is_file():
                 dest = f"{uuid.uuid4().hex[:8]}_{fn}"
-                shutil.copy(src, ARTIFACT_STORE / dest)
+                storage.put(src, dest)
                 stored.append(dest)
         result["artifacts"] = stored
         # keep the result manifest so a later viz run can mount it

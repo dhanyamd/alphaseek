@@ -1,0 +1,26 @@
+# LiteLLM gateway — one endpoint that routes/failover/tracks cost across providers.
+# Point the app at it:  LLM_BASE_URL=http://localhost:4000  LLM_MODEL=gemini-2.5-flash
+# Keys come from the environment (set on the litellm service in docker-compose).
+model_list:
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gpt-oss-120b
+    litellm_params:
+      model: openrouter/openai/gpt-oss-120b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: qwen3-coder
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  drop_params: true          # ignore params a given provider doesn't support
+  num_retries: 2
+  request_timeout: 40
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - gemini-2.5-flash: [gpt-oss-120b, qwen3-coder]
