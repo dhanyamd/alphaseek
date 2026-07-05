@@ -11,54 +11,34 @@ of QuantPad's research agent.
 ## System architecture
 
 ```
-                         ┌───────────────────────────────────────────────┐
-  Browser (Next.js IDE)  │  chat · CodeMirror editor · artifact viewer    │
-   left: files/sessions  │  right: agent pipeline strip + live feed       │
-        │  ▲              └───────────────────────────────────────────────┘
-   HTTP │  │ SSE  +  WebSocket (/api/sessions/{id}/ws)
-        ▼  │
-  ┌──────────────────────────── FastAPI (app/main.py) ────────────────────────┐
-  │  login · sessions · upload · run · artifacts · stream (SSE) · ws (WebSocket)│
-  │  events persisted to the store; live events fan out over the Redis bus      │
-  └──────┬───────────────────────────┬───────────────────────────┬────────────┘
-         │ enqueue                    │ persist                   │ publish
-         ▼                            ▼                           ▼
-  ┌─────────────┐            ┌──────────────────┐        ┌────────────────┐
-  │ arq worker  │            │  STORE (facade)  │        │  Redis pub/sub  │
-  │ (app/tasks) │            │  Postgres ⇢ or   │        │  (app/bus)      │
-  │ runs a run  │            │  SQLite fallback │        └────────────────┘
-  └──────┬──────┘            └──────────────────┘
-         │ research(seed) generator (app/agent/orchestrator)
-         ▼
-  LITERATURE (once/prompt)          ROUNDS (per iteration)
-  ┌──────────────────────┐   ┌────────────────────────────────────────────────┐
-  │ Researcher: queries  │   │ Synthesist  → connect papers → novel plan +     │
-  │ → OpenAlex/S2/arXiv   │   │               pip requirements                  │
-  │ → agentic RAG          │   │ Provision   → cached dep-layer image            │
-  │   (Qdrant + fastembed) │   │ Quant Coder → MATH ONLY, agentic run/fix loop,  │
-  │ → Reader → PaperBriefs │   │               autonomous (writes all its code)  │
-  └──────────────────────┘   │ Visualizer  → loads manifest, renders plotly    │
-                            │ Risk Critic → grades edge + overfit             │
-    LLM calls via           │ Reporter    → grounded answer + next steps      │
-    app/agent/llm.py        └──────────────────────┬──────────────────────────┘
-    (multi-provider,                               │ run code
-     failover, pacing)                 ┌───────────▼───────────────┐
-    — optionally through a             │  Docker sandbox            │
-    LiteLLM gateway                    │  --network none, non-root, │
-                                       │  read-only, cpu/mem caps   │
-                                       │  runs sandbox/runner.py     │
-                                       └───────────┬───────────────┘
-                                                   │ import alphaseek as af
-                                       ┌───────────▼───────────────┐
-                                       │  MINIMAL CONTRACT (6 items)│
-                                       │  af.DATA  af.OUT           │
-                                       │  af.backtest  af.submit    │
-                                       │  af.manifest  af.uploads   │
-                                       │  raw yfinance panels;      │
-                                       │  fwd hidden + LA guard     │
-                                       └────────────────────────────┘
-                       artifacts → S3 (+ presigned) or local disk
+   Browser ──── prompt ────► FastAPI ──── enqueue ────► arq worker
+      ▲                                                     │
+      └──── live events (WebSocket ◄ Redis bus) ────────────┘
+                                                            │  runs the pipeline
+                                                            ▼
+ ┌─ RESEARCH PIPELINE ──────────────────────────────────────────────────────┐
+ │                                                                           │
+ │  Researcher ─► Reader ─► Synthesist ─► Coder ─► Visualizer ─► Critic ─►    │
+ │      │           │                       │                        Reporter │
+ │  OpenAlex     Qdrant RAG            Docker sandbox                          │
+ │  arXiv/Jina   (+ fastembed)     (isolated · no network)                    │
+ │                                  agent writes all code,                    │
+ │                                  af.submit → blind grade                   │
+ └──────────────┬──────────────────────────────────┬────────────────────────┘
+                │ events                            │ artifacts
+                ▼                                   ▼
+          Postgres (log)                      S3 / local disk
+
+   LLM calls (every stage) ─► app/agent/llm.py ─► providers (Gemini / OpenRouter)
+                                 multi-provider · failover · pacing
+                                 (optionally via a LiteLLM gateway)
 ```
+
+**Flow:** a prompt is queued; a worker runs the pipeline — the *research* half
+(Researcher → Reader → Synthesist) reads papers and produces a grounded plan,
+the *build* half (Coder → Visualizer) writes and runs real code in an isolated
+sandbox and renders charts, and (Critic → Reporter) grade and explain it. Every
+event streams live to the browser and is logged to Postgres; artifacts go to S3.
 
 **Design principles**
 - **Autonomous coder, minimal contract.** The sandbox exposes exactly six things
