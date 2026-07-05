@@ -1,0 +1,42 @@
+# AlphaSeek v3 infrastructure — the backing services the scaled architecture runs on.
+# Additive: the existing single-process app keeps working; v3 components attach to these.
+#   docker compose up -d        # start all
+#   docker compose ps           # status
+services:
+  # Job queue broker + live pub/sub + cache (arq queue, event fan-out, paper cache).
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Durable store: users / sessions / events (JSONB) — replaces SQLite for concurrency.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: alphaseek
+      POSTGRES_PASSWORD: alphaseek
+      POSTGRES_DB: alphaseek
+    ports: ["5432:5432"]
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alphaseek"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Persistent vector store for the cross-session paper/RAG corpus (fastembed vectors).
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: ["qdrant-data:/qdrant/storage"]
+
+volumes:
+  redis-data:
+  pg-data:
+  qdrant-data:

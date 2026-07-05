@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+body {
+  background: #0a0a0a;
+  color: #ededed;
+  font-family: "Geist", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono { font-family: "Geist Mono", ui-monospace, monospace; }
+
+/* labels */
+.eyebrow {
+  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #8a8a8f; font-weight: 500;
+}
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* surfaces */
+.card { background: #111112; border: 1px solid #262628; border-radius: 8px; }
+.card-raised { background: #161617; border: 1px solid #262628; border-radius: 8px; }
+.hair { border-color: #262628; }
+
+/* buttons */
+.btn {
+  background: #fafafa; color: #0a0a0a; font-weight: 500; border-radius: 6px;
+  transition: opacity 0.12s ease;
+}
+.btn:hover { opacity: 0.88; }
+.btn:disabled { background: #2a2a2c; color: #6a6a6f; }
+.btn-outline {
+  border: 1px solid #333336; color: #ededed; border-radius: 6px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.btn-outline:hover { border-color: #4a4a4f; background: #161617; }
+
+/* code block */
+.code {
+  font-family: "Geist Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.6;
+  background: #0d0d0e; border: 1px solid #262628; border-radius: 6px;
+  color: #cfcfd4; white-space: pre; overflow-x: auto;
+}
+.code .kw { color: #fafafa; font-weight: 500; }
+.code .str { color: #9a9aa0; }
+
+/* diff-add marker like an IDE gutter */
+.filecard-head {
+  display: flex; align-items: center; gap: 8px;
+  font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; color: #b5b5ba;
+}
+
+/* subtle active dot */
+.dot { width: 6px; height: 6px; border-radius: 50%; background: #6a6a6f; }
+.dot.on { background: #fafafa; animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+
+/* progress line for active step */
+.scan { position: relative; overflow: hidden; }
+.scan::after {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+  animation: scan 1.2s linear infinite;
+}
+@keyframes scan { from { transform: translateX(-120%); } to { transform: translateX(400%); } }
+
+.animate-in { animation: rise 0.22s ease-out both; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #262628; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #38383c; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::after, ::before { animation: none !important; transition: none !important; }
+}
