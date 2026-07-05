@@ -52,13 +52,24 @@ def _jsonify(x):
 
 
 def _std(x):
+    """Cross-sectional z-score. Works on a single day (1-D, N) or a panel (T, N)."""
     x = np.asarray(x, dtype=float)
-    return (x - x.mean(1, keepdims=True)) / (x.std(1, keepdims=True) + 1e-9)
+    flat = x.ndim == 1
+    if flat:
+        x = x[None, :]
+    out = (x - x.mean(1, keepdims=True)) / (x.std(1, keepdims=True) + 1e-9)
+    return out[0] if flat else out
 
 
 def _rank(x):
-    order = np.asarray(x).argsort(1).argsort(1).astype(float)
-    return 2 * (order / (x.shape[1] - 1)) - 1
+    """Cross-sectional rank in [-1, 1]. Works on a single day (1-D) or a panel (T, N)."""
+    x = np.asarray(x, dtype=float)
+    flat = x.ndim == 1
+    if flat:
+        x = x[None, :]
+    order = x.argsort(1).argsort(1).astype(float)
+    out = 2 * (order / (x.shape[1] - 1)) - 1
+    return out[0] if flat else out
 
 
 def load_market():

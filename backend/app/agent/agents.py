@@ -277,20 +277,21 @@ class CodingAgent:
             "```python\n"
             "import numpy as np\n"
             "import alphaseek_data as ad\n"
-            "print(ad.describe())              # ALWAYS inspect the schema first\n"
-            "px = ad.data['close']             # pick real columns from ad.columns\n"
-            "# YOU build the feature, e.g. 126-day momentum skipping the last 10 days:\n"
-            "mom = np.full_like(px, np.nan)\n"
-            "mom[126:] = px[126:] / px[116:-10] - 1.0     # causal: past rows only\n"
-            "sig = ad.zscore(np.nan_to_num(mom))          # cross-sectional z-score, (T, N)\n"
-            "bt = ad.backtest(sig)             # metrics dict\n"
-            "print(f\"sharpe={bt['sharpe']:.3f} net={bt['sharpe_net']:.3f} ic={bt['mean_ic']:.4f}\")\n"
+            "print(ad.describe())                     # ALWAYS inspect the schema first\n"
+            "x = ad.data[ad.columns[0]]               # a (T, N) panel from this dataset\n"
+            "feature = ...                            # <- YOUR construction from the paper,\n"
+            "                                         #    (T, N), causal (past rows only)\n"
+            "sig = ad.zscore(np.nan_to_num(feature))  # cross-sectional z-score, (T, N)\n"
+            "bt = ad.backtest(sig)\n"
+            "print(bt['sharpe'], bt['sharpe_net'], bt['mean_ic'])\n"
             "ad.record(equity=bt['equity_curve'], ic=ad.ic_series(sig))\n"
-            "ad.submit(sig)                    # REQUIRED final line\n"
+            "ad.submit(sig)                           # REQUIRED final line\n"
             "```\n"
-            "Rules: inspect ad.describe(), use only columns that exist; build features "
-            "CAUSALLY (past rows only — never index future rows or fwd, or the look-ahead "
-            "guard rejects you); z-score/rank/backtest need the full (T, N) panel.\n\n"
+            "This shows only the API call SHAPES — the feature/strategy is entirely yours "
+            "to design from the papers. Rules: inspect ad.describe(), use only columns that "
+            "exist; build features CAUSALLY (past rows only — never index future rows or fwd, "
+            "or the look-ahead guard rejects you); z-score/rank accept a single day (1-D) or "
+            "the full (T, N) panel.\n\n"
             + env_spec() + "\n\n" + ENGINEERING + "\n\n"
             "HOW YOU WORK\n"
             "- ONE tool: run_python(code). Each call runs a FULL standalone script in a "
@@ -342,10 +343,13 @@ class CodingAgent:
         last_error = ""
 
         for turn in range(1, self.MAX_STEPS + 1):
-            # A full research script is large — give it real room so the tool-call
-            # JSON is never truncated mid-payload (which reads as unparseable).
+            # Until we have a graded result, FORCE the tool call so the model
+            # can't waste a turn "explaining" instead of running code; once it has
+            # submitted, allow a free turn so it can end with a text summary.
+            # Big max_tokens so a full script's tool-call JSON is never truncated.
             resp = llm.chat_tools(self._system(), messages, RUN_TOOL, role="coder",
-                                  max_tokens=8000)
+                                  max_tokens=8000,
+                                  tool_choice="auto" if final is not None else "required")
             if not resp["tool_calls"]:
                 # A summary AFTER we already have a submitted result ends the turn.
                 if final is not None and resp["content"].strip():

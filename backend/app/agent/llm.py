@@ -49,6 +49,7 @@ class _Provider:
         # reasoning and truncate the answer; reasoning_effort="none" routes the
         # whole budget to output. Flipped off if a provider rejects the param.
         self.supports_reasoning_effort = True
+        self.supports_required_tool = True
         # Client-side pacing: on a tight per-minute limit (Gemini free ~20/min),
         # keep a minimum gap between calls so we never burst past it. Set via
         # LLM_MIN_INTERVAL_<NAME> seconds; 0 = no throttle.
@@ -181,7 +182,8 @@ class LLM:
 
     def chat_tools(self, system: str, messages: list[dict], tools: list[dict], *,
                    temperature: float = 0.3, max_tokens: int = 2300,
-                   attempts: int = 4, role: str | None = None) -> dict:
+                   attempts: int = 4, role: str | None = None,
+                   tool_choice: str = "auto") -> dict:
         """Tool-calling turn. Returns {"content": str, "tool_calls": [{id,name,arguments}]}.
 
         Same retry/backoff policy as chat(); failures raise LLMError.
@@ -196,8 +198,9 @@ class LLM:
                     prov.throttle()
                     extra = ({"reasoning_effort": "none"}
                              if prov.supports_reasoning_effort else {})
+                    tc = tool_choice if prov.supports_required_tool else "auto"
                     resp = prov.client.chat.completions.create(
-                        model=model, messages=full, tools=tools, tool_choice="auto",
+                        model=model, messages=full, tools=tools, tool_choice=tc,
                         temperature=temperature, max_tokens=max_tokens, **extra,
                     )
                     m = resp.choices[0].message
@@ -215,6 +218,9 @@ class LLM:
                     if "reasoning_effort" in msg and prov.supports_reasoning_effort:
                         prov.supports_reasoning_effort = False
                         continue    # retry this model without the param
+                    if "tool_choice" in msg and prov.supports_required_tool:
+                        prov.supports_required_tool = False
+                        continue    # provider rejects "required" -> fall back to auto
                     # Groq/llama sometimes writes a correct call the parser rejects
                     # (nested quotes in code). The intended call is in
                     # failed_generation — salvage it instead of failing.

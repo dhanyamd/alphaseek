@@ -143,7 +143,9 @@ _SYSTEM = (
     "faithful structured brief for the research goal. Never invent content that is "
     "not in the excerpts; use empty values when the excerpts do not say. Respond "
     "with ONLY JSON: {"
-    '"relevant": true/false (does this paper actually inform the goal?), '
+    '"relevant": true unless the paper is CLEARLY off-topic (different asset class '
+    'or an unrelated problem) — a paper about any factor, risk model, or method the '
+    'goal touches counts as relevant; be inclusive, not strict, '
     '"claim": "the paper\'s central claim in one sentence", '
     '"method_steps": ["the method as concrete ordered steps, equations as pseudocode"], '
     '"parameters": {"name": "value"} (windows, thresholds, formation periods), '

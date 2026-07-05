@@ -152,6 +152,7 @@ def _literature(seed, researcher, mem, state) -> Iterator[dict]:
     # + one LLM reduce, all independent. Serial reads dominated wall-clock.
     yield {"type": "handoff", "step": 0, "agent": "Researcher",
            "action": f"reading {len(candidates)} papers"}
+    read_briefs = []
     with ThreadPoolExecutor(max_workers=READ_CONCURRENCY) as pool:
         futures = {pool.submit(_read_one, seed, p): p for p in candidates}
         for fut in as_completed(futures):
@@ -164,6 +165,7 @@ def _literature(seed, researcher, mem, state) -> Iterator[dict]:
                 continue
             if brief is None:
                 continue
+            read_briefs.append(brief)
             yield {"type": "reading", "step": 0, "agent": "Researcher",
                    "title": brief.title, "year": brief.year,
                    "relevant": brief.relevant, "claim": brief.claim,
@@ -173,6 +175,12 @@ def _literature(seed, researcher, mem, state) -> Iterator[dict]:
                    "reported_numbers": brief.reported_numbers}
             if brief.relevant:
                 state["briefs"].append(brief)
+
+    # Best-effort grounding: if the gate rejected everything, still hand the
+    # Synthesist the papers we actually read (top-ranked first) rather than
+    # designing blind. We retrieved them for a reason — never end with 0 briefs.
+    if not state["briefs"] and read_briefs:
+        state["briefs"] = read_briefs
 
 
 def _read_one(seed: str, paper):
