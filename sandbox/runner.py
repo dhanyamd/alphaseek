@@ -1,18 +1,17 @@
 
 """In-container runner — executes an agent-written RESEARCH SCRIPT on REAL data.
 
-The script imports the built-in data API (mirroring QuantPad's quantpad_data):
+Minimal contract (the agent writes all its own code with pandas/numpy/scipy/...):
 
-    import alphaseek_data as ad
-    f = ad.features()                        # dict of (T,N) arrays — real US equities
-    res = ad.backtest(signal)                # metrics for any candidate signal
-    ad.submit(signal)                        # final signal for official grading
-    plt.savefig(f"{ad.ARTIFACTS}/x.png")     # charts collected as artifacts
-    ad.uploads()                             # user-uploaded files, if any
+    import alphaseek as af
+    d = np.load(af.DATA)                      # raw market panels — load + inspect
+    sig = ...                                 # the agent's own (T,N) signal
+    m = af.submit(sig)                        # OFFICIAL graded metrics (call once)
+    np.savez(f"{af.OUT}/manifest.npz", ...)   # arrays for the visualization stage
 
-Market data is loaded from DATA_PATH (an .npz mounted read-only). Forward
-returns are NEVER exposed raw — signals are graded blind, so scripts cannot
-cheat. Captures stdout, collects artifacts, prints one JSON result line.
+Forward returns are NEVER exposed — signals are graded against hidden data and a
+look-ahead guard rejects future-peeking. Captures stdout, collects artifacts,
+prints one JSON result line.
 """
 import io
 import json
@@ -26,29 +25,10 @@ import numpy as np
 ART_DIR = os.environ.get("ARTIFACTS_DIR", "/out")
 DATA_PATH = os.environ.get("DATA_PATH", "/data/market.npz")
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "/uploads")
-MANIFEST_OUT = os.path.join(ART_DIR, "manifest.json")   # coder writes here
-MANIFEST_IN = os.environ.get("MANIFEST_PATH", "/in/manifest.json")  # viz reads here
+MANIFEST_OUT = os.path.join(ART_DIR, "manifest.npz")    # coder saves arrays here
+MANIFEST_IN = os.environ.get("MANIFEST_PATH", "/in/manifest.npz")  # viz reads here
 
 
-def _jsonify(x):
-    """Make numpy/pandas objects JSON-serializable for the result manifest."""
-    if isinstance(x, np.ndarray):
-        return x.tolist()
-    if isinstance(x, (np.floating, np.integer)):
-        return x.item()
-    if isinstance(x, dict):
-        return {str(k): _jsonify(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return [_jsonify(v) for v in x]
-    try:                                    # pandas Series/Index/etc.
-        import pandas as pd
-        if isinstance(x, (pd.Series, pd.Index)):
-            return x.tolist()
-        if isinstance(x, pd.DataFrame):
-            return {str(c): x[c].tolist() for c in x.columns}
-    except Exception:  # noqa: BLE001
-        pass
-    return x
 
 
 def _std(x):
@@ -98,8 +78,8 @@ def compute_metrics(signal, fwd):
         raise ValueError(
             f"Look-ahead detected: mean rank-IC {mean_ic:.3f} is implausibly high "
             "(real equity factors run ~0.01-0.05). Your signal is using FUTURE "
-            "information. Build signals causally from ad.prices()/ad.returns() using "
-            "PAST rows only (e.g. ad.roll_mean); never index future rows or use fwd.")
+            "information. Build it CAUSALLY from the raw panels (past rows only); "
+            "never index future rows.")
     eq = np.cumprod(1 + np.nan_to_num(port))
     dd = eq / np.maximum.accumulate(eq) - 1
     third = max(len(ic) // 3, 1)
@@ -123,164 +103,65 @@ def compute_metrics(signal, fwd):
     }
 
 
-def _roll_mean(x, w):
-    """Causal rolling mean along time (axis 0): value at t uses rows [t-w+1, t].
-
-    Works on a 1-D series (e.g. market returns) or a 2-D (T, N) panel."""
-    x = np.asarray(x, dtype=float)
-    flat = x.ndim == 1
-    if flat:
-        x = x[:, None]
-    c = np.cumsum(np.vstack([np.zeros((1, x.shape[1])), x]), axis=0)
-    out = np.full_like(x, np.nan)
-    out[w - 1:] = (c[w:] - c[:-w]) / w
-    out[:w - 1] = out[w - 1]
-    return out[:, 0] if flat else out
 
 
-def _roll_std(x, w):
-    """Causal rolling std along time (axis 0)."""
-    m = _roll_mean(x, w)
-    m2 = _roll_mean(np.asarray(x, dtype=float) ** 2, w)
-    return np.sqrt(np.maximum(m2 - m**2, 1e-12))
 
 
-PLOTLY_LAYOUT = {
-    "template": "plotly_dark",
-    "paper_bgcolor": "#111112", "plot_bgcolor": "#111112",
-    "font": {"family": "Geist, system-ui, sans-serif", "size": 12, "color": "#d4d4d8"},
-    "colorway": ["#fafafa", "#7ee787", "#79c0ff", "#ff7b72", "#d2a8ff", "#ffa657"],
-    "margin": {"l": 50, "r": 20, "t": 50, "b": 40},
-}
-
-
-def make_data_module(feats, fwd, tickers, dates, raw=None):
-    mod = types.ModuleType("alphaseek_data")
+def make_alphaseek(fwd, raw, tickers, dates):
+    """The MINIMAL sandbox contract. The agent writes all the code itself with
+    pandas/numpy/scipy/sklearn; the sandbox only provides:
+      alphaseek.DATA  -> path to a .npz of raw market panels (load + inspect it)
+      alphaseek.OUT   -> directory to save artifacts + a manifest.npz for charts
+      alphaseek.backtest(signal) -> metrics dict (evaluation, no side effects)
+      alphaseek.submit(signal)   -> the OFFICIAL graded metrics (call once)
+      alphaseek.manifest()       -> arrays saved by the math stage (viz stage)
+      alphaseek.uploads()        -> any user-uploaded file paths
+    Forward returns stay hidden; a look-ahead guard rejects future-peeking signals.
+    """
+    mod = types.ModuleType("alphaseek")
     submitted = {}
-    raw = raw or {}
 
-    # Equal-weight market return, PAST-aligned: entry t is the return realized
-    # over day t-1 -> t (knowable at t, same timing as the features). Safe for
-    # regime analysis; contains no future information relative to grading.
-    mkt = np.zeros(fwd.shape[0])
-    mkt[1:] = fwd.mean(1)[:-1]
+    # A public data file the agent loads itself — raw panels only, NO fwd.
+    public = {f"px_{k}": v for k, v in raw.items()}
+    public["tickers"] = np.asarray(tickers)
+    public["dates"] = np.asarray(dates)
+    data_path = "/tmp/market.npz"
+    np.savez(data_path, **public)
 
-    def market_returns():
-        return mkt.copy()
-
-    def monte_carlo(signal, n_paths=400, seed=0):
-        """Bootstrap the signal's daily portfolio returns into equity paths.
-
-        Returns dict with downsampled sample paths and percentile bands (p5/p50/p95)
-        plus terminal stats — everything needed for a QuantPad-style fan chart.
-        Only aggregate portfolio returns are used; forward returns stay hidden.
-        """
-        s = _std(np.nan_to_num(np.asarray(signal, dtype=float)))
-        w = s - s.mean(1, keepdims=True)
-        w = w / (np.abs(w).sum(1, keepdims=True) + 1e-9)
-        port = (w * fwd).sum(1)
-        rng = np.random.default_rng(seed)
-        T = len(port)
-        idx = rng.integers(0, T, size=(int(n_paths), T))
-        paths = np.cumprod(1 + port[idx], axis=1)
-        step = max(1, T // 100)
-        x = list(range(0, T, step))              # day index for every series below
-        terminal = paths[:, -1]
-        out = {
-            "x": x,
-            "sample_paths": [p[::step].round(4).tolist() for p in paths[:40]],
-            "terminal_mean": float(terminal.mean()),
-            "terminal_p5": float(np.percentile(terminal, 5)),
-            "terminal_p95": float(np.percentile(terminal, 95)),
-            "prob_loss": float((terminal < 1.0).mean()),
-            "max_drawdown_p95": float(np.percentile(
-                (paths / np.maximum.accumulate(paths, axis=1) - 1).min(axis=1), 5)),
-        }
-        for q in (5, 25, 50, 75, 95):            # p5..p95 — all same length as x
-            out[f"p{q}"] = np.percentile(paths, q, axis=0)[::step].round(4).tolist()
-        return out
-
-    def _validated_backtest(signal):
+    def _grade(signal):
         sig = np.asarray(signal, dtype=float)
         if sig.shape != fwd.shape:
             raise ValueError(
-                f"ad.backtest(signal) needs the FULL history: shape {fwd.shape}, got {sig.shape}. "
-                "Never slice the time axis — compute your signal on the complete (T, N) arrays; "
-                "to vary a lookback, transform the full array (e.g. rolling ops), not a slice.")
-        return compute_metrics(sig, fwd)
+                f"signal must be the FULL (T, N) panel {fwd.shape}, got {sig.shape}. "
+                "Compute it on the complete arrays; never slice the time axis.")
+        return compute_metrics(sig, fwd)          # includes the look-ahead guard
 
-    # RAW point-in-time panels, SCHEMA-DRIVEN — the agent inspects whatever
-    # columns exist (they differ per dataset) and computes its own features.
-    mod.data = {k: v.copy() for k, v in raw.items()}   # {column_name: (T, N) array}
-    mod.columns = sorted(raw)
+    def submit(signal):
+        metrics = _grade(signal)                   # grade first (may raise)
+        submitted["signal"] = np.asarray(signal, dtype=float)
+        submitted["metrics"] = metrics
+        return metrics
 
-    def describe():
-        """Runtime schema of the loaded data — inspect before writing code."""
-        lines = [f"rows(T)={fwd.shape[0]} cols(N)={fwd.shape[1]} tickers/dates provided"]
-        for k in sorted(raw):
-            v = raw[k]
-            last = v[-1][np.isfinite(v[-1])]
-            rng = f"[{last.min():.4g}, {last.max():.4g}]" if last.size else "[]"
-            lines.append(f"  data['{k}']: (T,N) float, last-row range {rng}")
-        return "\n".join(lines)
-
-    mod.describe = describe
-    # Convenience aliases for the common market columns (still schema-checked).
-    mod.prices = lambda: raw["close"].copy() if "close" in raw else None
-    mod.volume = lambda: raw["volume"].copy() if "volume" in raw else None
-    mod.returns = lambda: raw["returns"].copy() if "returns" in raw else None
-    mod.backtest = _validated_backtest
-    mod.submit = lambda signal: submitted.__setitem__("signal", np.asarray(signal, dtype=float))
-    mod.rank = _rank
-    mod.zscore = _std
-    mod.FEATURES = sorted(feats)
-    mod.TICKERS = tickers
-    mod.DATES = dates
-    mod.ARTIFACTS = ART_DIR
-    def ic_series(signal):
-        """Daily rank-IC of a (T,N) signal vs next-day returns — for stability charts."""
-        sr, fr = _rank(signal), _rank(fwd)
-        sr = sr - sr.mean(1, keepdims=True); fr = fr - fr.mean(1, keepdims=True)
-        return (sr * fr).sum(1) / (np.sqrt((sr**2).sum(1) * (fr**2).sum(1)) + 1e-9)
-
-    # --- result manifest: the seam between the math stage and the viz stage ---
-    manifest: dict = {}
-
-    def record(**named):
-        """Save named results (metrics, arrays, series) for the Visualizer.
-
-        The math stage calls ad.record(equity_scaled=..., sweep_grid=...) with
-        everything a chart could need. The Visualizer later loads these via
-        ad.manifest() and plots them — it never recomputes the math."""
-        manifest.update({k: _jsonify(v) for k, v in named.items()})
-        with open(MANIFEST_OUT, "w") as fh:
-            json.dump(manifest, fh)
-        return sorted(manifest)
-
-    def load_manifest():
-        """Load the recorded manifest (viz stage). Numeric fields come back as
-        lists — wrap in np.asarray as needed."""
+    def manifest():
         if not os.path.isfile(MANIFEST_IN):
             raise FileNotFoundError(
-                "ad.manifest() found no manifest — the math stage must call "
-                "ad.record(...) first. This script runs in the visualization stage.")
-        with open(MANIFEST_IN) as fh:
-            return json.load(fh)
+                "alphaseek.manifest() found nothing — the math stage must save arrays "
+                "to alphaseek.OUT/manifest.npz (np.savez) first.")
+        return dict(np.load(MANIFEST_IN))
 
-    mod.record = record
-    mod.manifest = load_manifest
-    mod.market_returns = market_returns
-    mod.monte_carlo = monte_carlo
-    mod.ic_series = ic_series
-    mod.roll_mean = _roll_mean
-    mod.roll_std = _roll_std
-    mod.PLOTLY_LAYOUT = dict(PLOTLY_LAYOUT)
+    mod.DATA = data_path
+    mod.OUT = ART_DIR
+    mod.backtest = _grade
+    mod.submit = submit
+    mod.manifest = manifest
     mod.uploads = lambda: (
         [os.path.join(UPLOADS_DIR, f) for f in sorted(os.listdir(UPLOADS_DIR))]
-        if os.path.isdir(UPLOADS_DIR) else []
-    )
-    mod.__doc__ = "AlphaSeek data API: features(), backtest(), submit(), rank, zscore, uploads()"
+        if os.path.isdir(UPLOADS_DIR) else [])
+    mod.__doc__ = ("alphaseek sandbox: DATA (npz path), OUT (dir), backtest(signal), "
+                   "submit(signal), manifest(), uploads().")
     return mod, submitted
+
+
 
 
 def main():
@@ -308,23 +189,18 @@ def main():
 
     stdout = io.StringIO()
     try:
-        feats, fwd, tickers, dates, raw = load_market()
-        mod, submitted = make_data_module(feats, fwd, tickers, dates, raw)
-        sys.modules["alphaseek_data"] = mod
+        _feats, fwd, tickers, dates, raw = load_market()
+        mod, submitted = make_alphaseek(fwd, raw, tickers, dates)
+        sys.modules["alphaseek"] = mod
         ns = {"__name__": "__main__"}
         with redirect_stdout(stdout), redirect_stderr(stdout):
             exec(compile(code, "research.py", "exec"), ns)
-        if "signal" not in submitted and callable(ns.get("factor")):
-            submitted["signal"] = np.asarray(ns["factor"](feats), dtype=float)
         if "signal" in submitted:
-            signal = submitted["signal"]
-            if signal.shape != fwd.shape:
-                raise ValueError(f"submitted signal shape {signal.shape}, expected {fwd.shape}")
-            result = compute_metrics(signal, fwd)
+            result = dict(submitted["metrics"])     # already graded in submit()
             result["ok"] = True
             result["submitted"] = True
         else:
-            # exploration run — no final signal yet; stdout/artifacts still returned
+            # exploration run — no submit yet; stdout/artifacts still returned
             result = {"ok": True, "submitted": False}
     except Exception as e:  # noqa: BLE001
         import traceback
@@ -342,10 +218,9 @@ def main():
         fn for fn in os.listdir(ART_DIR)
         if fn.lower().endswith((".png", ".svg", ".jpg", ".html"))
     ) if os.path.isdir(ART_DIR) else []
-    if os.path.isfile(MANIFEST_OUT):        # keys the Visualizer can chart
+    if os.path.isfile(MANIFEST_OUT):        # arrays the Visualizer can chart
         try:
-            with open(MANIFEST_OUT) as fh:
-                result["manifest_keys"] = sorted(json.load(fh))
+            result["manifest_keys"] = sorted(np.load(MANIFEST_OUT).files)
         except Exception:  # noqa: BLE001
             pass
     print(json.dumps(result))

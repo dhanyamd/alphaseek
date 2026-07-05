@@ -1,7 +1,7 @@
 """Run agent-written research SCRIPTS — Docker-hardened, artifact-collecting.
 
 Both engines execute the SAME `sandbox/runner.py` contract (script imports
-`alphaseek_data`, calls ad.submit(signal), may print + save charts):
+`alphaseek`, loads af.DATA, calls af.submit(signal), may save artifacts):
 
   * docker     — hardened container: no network, read-only fs, non-root,
                  memory/CPU caps. /in (code, ro) and /out (artifacts, rw) mounts.
@@ -63,8 +63,8 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
     """Execute an agent research script; return metrics + stdout + artifacts.
 
     `image` selects a provisioned sandbox image (base or a dep-layered one).
-    `manifest_src` mounts a prior run's result manifest at /in/manifest.json so
-    a visualization script can load it via ad.manifest() without recomputing.
+    `manifest_src` mounts a prior run's result manifest at /in/manifest.npz so
+    a visualization script can load it via alphaseek.manifest() without recomputing.
     """
     global _docker_ok
     import time as _time
@@ -74,7 +74,7 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
     out.mkdir()
     (tmp / "research.py").write_text(code)
     if manifest_src and Path(manifest_src).is_file():
-        shutil.copy(manifest_src, tmp / "manifest.json")
+        shutil.copy(manifest_src, tmp / "manifest.npz")
     try:
         if docker_available():
             try:
@@ -105,9 +105,9 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
                 stored.append(dest)
         result["artifacts"] = stored
         # keep the result manifest so a later viz run can mount it
-        man = out / "manifest.json"
+        man = out / "manifest.npz"
         if man.is_file():
-            dest = ARTIFACT_STORE / f"{uuid.uuid4().hex[:8]}_manifest.json"
+            dest = ARTIFACT_STORE / f"{uuid.uuid4().hex[:8]}_manifest.npz"
             shutil.copy(man, dest)
             result["manifest_path"] = str(dest)
         result["elapsed_s"] = round(_time.time() - t0, 2)
@@ -153,7 +153,7 @@ def _exec_local(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None) ->
     env = dict(os.environ, ARTIFACTS_DIR=str(out), MPLBACKEND="Agg",
                MPLCONFIGDIR=str(tmp / "mpl"), DATA_PATH=str(DATA_DIR / "market.npz"),
                UPLOADS_DIR=str(uploads_dir or ""),
-               MANIFEST_PATH=str(tmp / "manifest.json"))
+               MANIFEST_PATH=str(tmp / "manifest.npz"))
     try:
         p = subprocess.run(
             [sys.executable, str(RUNNER), str(tmp / "research.py")],

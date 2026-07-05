@@ -35,50 +35,35 @@ STACK = ("numpy, pandas, scipy, scikit-learn, statsmodels, "
 
 def env_spec() -> str:
     meta = dataset_meta()
-    cols = meta.get("inputs", [])
     data_line = (
         f"{meta.get('stocks', '?')} instruments x {meta.get('days', '?')} periods "
-        f"({meta.get('start', '?')} to {meta.get('end', '?')})."
-        if meta.get("source") == "real" else "Dataset (backend-provided)."
+        f"({meta.get('start', '?')}..{meta.get('end', '?')})"
+        if meta.get("source") == "real" else "backend-provided dataset"
     )
-    cols_line = ", ".join(f"data['{c}']" for c in cols) if cols else "(inspect at runtime)"
-    return f"""ENVIRONMENT — full Python research scripts on whatever dataset is loaded.
-- Data: {data_line} Columns present THIS run: {cols_line}. The schema varies per
-  dataset — always inspect ad.describe() first and adapt; do not assume columns.
-- Libraries available (baked in, import directly): {STACK}. To use anything else,
-  it must have been declared in the research plan's requirements (the backend
-  installs those before you run) — you CANNOT install packages (no network).
-- `import alphaseek_data as ad` — the data + grading API:
-  - ad.describe() -> str: the runtime schema (column names, shapes, value ranges).
-    CALL IT FIRST so your code matches the actual data.
-  - ad.data -> dict {{column_name: (T, N) array}}, e.g. ad.data['close']. Keys are
-    whatever this dataset has (ad.columns lists them). There are NO pre-computed
-    features — derive EVERY feature/signal yourself from these raw panels,
-    implementing the paper's exact construction with its own lookbacks/windows.
-  - ad.uploads() -> paths of any user-uploaded datasets; pandas-read + inspect them.
-  - (convenience for market data, when present) ad.prices(), ad.returns(), ad.volume().
-  - ad.backtest(signal) -> metrics for ANY full (T,N) signal: sharpe, sharpe_net
-    (after costs), mean_ic, ic_early/ic_late/ic_decay, turnover, max_drawdown,
-    hit_rate, equity_curve. Evaluate and iterate inside the script.
-  - ad.submit(signal) -> REQUIRED once: the final (T,N) signal for official grading.
-  - ad.record(**named) -> save results the Visualizer will chart later (equity
-    curves, sweep grids, IC series, MC paths...). Call it with every array a chart
-    could need; pass plain numpy arrays / lists / floats.
-  - ad.rank(x), ad.zscore(x) -> cross-sectional (per-day) helpers.
-  - ad.roll_mean(x, w), ad.roll_std(x, w) -> CAUSAL rolling ops (no look-ahead).
-  - ad.ic_series(signal) -> (T,) daily rank-IC series.
-  - ad.market_returns() -> (T,) equal-weight market returns, past-aligned.
-  - ad.monte_carlo(signal, n_paths=400) -> dict with x, sample_paths, p5..p95,
-    prob_loss, terminal_* (ready for a fan chart).
-  - ad.uploads() -> user-uploaded file paths. ad.TICKERS, ad.DATES, ad.ARTIFACTS.
-- print() findings — stdout is shown to the user.
-- SHAPES: signals passed to ad.backtest/ad.submit must be FULL (T, N); never slice
-  the time axis.
-- FORBIDDEN: network access, files outside ad.ARTIFACTS, look-ahead of any kind."""
+    return f"""SANDBOX CONTRACT — you write ALL the code yourself. Installed and
+importable: {STACK}, matplotlib, plotly. No network, no pip.
+
+`import alphaseek as af` gives you exactly four things:
+  - af.DATA : path to a .npz of RAW market panels ({data_line}). LOAD and INSPECT it:
+        import numpy as np
+        d = np.load(af.DATA); print(d.files)      # discover the columns yourself
+      Panels are `px_<name>` (T, N) arrays (e.g. px_close), plus 'tickers','dates'.
+      There are NO pre-computed features — derive every feature from these raw panels.
+  - af.backtest(signal) -> metrics dict {{sharpe, sharpe_net, mean_ic, ic_decay,
+      turnover, max_drawdown, equity_curve}}. Use it to evaluate as you iterate.
+  - af.submit(signal) -> the OFFICIAL graded metrics; call ONCE when finished.
+      `signal` is a FULL (T, N) array. Grading is BLIND (forward returns hidden) —
+      build signals CAUSALLY (past rows only) or the look-ahead guard rejects them.
+  - af.OUT : a directory. Save arrays the chart stage needs with
+      np.savez(f"{{af.OUT}}/manifest.npz", equity=..., ic=...). Do NOT draw charts.
+  - af.uploads() -> paths of any user-uploaded files (pandas-readable).
+
+Everything else — features, regressions, optimization, statistics — is your own
+code with numpy/pandas/scipy/sklearn/statsmodels/arch/cvxpy."""
 
 
 CHART_CRAFT = """CHART DESIGN SYSTEM (plotly, interactive, house style — follow exactly):
-Always: fig.update_layout(**ad.PLOTLY_LAYOUT, title=..., and axis titles). Name every
+Always: fig.update_layout(template='plotly_dark', title=..., and axis titles). Name every
 trace; add units; hovertemplates where useful. One figure per HTML file.
 
 Pattern A — 3D SURFACE (parameter sweeps, term structures):
@@ -156,7 +141,7 @@ class Synthesist:
                    feedback: str, tried: list[str], uploads: list[str]) -> dict:
         # Constraints stated in the goal ("uncorrelated with momentum", "only
         # low-vol") are the model's to read and honor — we do not pre-parse intent.
-        uploads_note = f"\nUser uploads available via ad.uploads(): {uploads}" if uploads else ""
+        uploads_note = f"\nUser uploads available via af.uploads(): {uploads}" if uploads else ""
         user = (
             f"RESEARCH GOAL: {seed}\n"
             f"Data: raw daily prices, returns, and volume (T,N) — the coder computes "
@@ -194,7 +179,7 @@ RUN_TOOL = [{
     "function": {
         "name": "run_python",
         "description": ("Execute a complete Python research script in the sandbox. Returns "
-                        "JSON: submitted flag, official metrics when ad.submit(signal) was "
+                        "JSON: submitted flag, official metrics when af.submit(signal) was "
                         "called, recorded manifest keys, captured stdout, or the error with "
                         "traceback."),
         "parameters": {
@@ -241,69 +226,41 @@ def _extract_code_arg(arguments: str) -> str:
             return raw.replace("\\n", "\n").replace('\\"', '"')
 
 
-ENGINEERING = """ENGINEERING STANDARDS (this is the MATH stage — no charts):
-- Open with a docstring: hypothesis + method in 2 lines.
-- Constants at top (windows, weights) — no magic numbers inline.
-- Use the quant stack where it fits: empyrical for risk/return metrics, arch for
-  GARCH volatility, statsmodels/sklearn for regressions and hazard models.
-- Implement EVERY methodology step; where the plan compares variants, ad.backtest
-  each and print a small aligned findings table (name | sharpe | net | IC | turnover).
-- For each validation target, print a line comparing your measured value to the
-  paper's (ours vs reported) — divergence is itself a finding.
+ENGINEERING = """ENGINEERING STANDARDS:
+- Implement the plan's method faithfully from the raw panels — you compute every
+  feature/estimator yourself (empyrical for metrics, arch for GARCH,
+  statsmodels/sklearn for regressions/hazard models, cvxpy for optimization).
+- Where the plan compares variants, af.backtest each and print an aligned findings
+  table; where the papers report numbers, print ours-vs-theirs.
 - Vectorized numpy — no per-element Python loops over the full panel.
-- Call ad.record(...) with every series/grid a chart will need (equity curves,
-  sweep grids, IC series, regime masks, MC paths).
-- End with ad.submit(best_signal), chosen BY the printed evidence.
-- DO NOT import matplotlib or plotly and DO NOT draw charts — a later stage does that."""
+- Save the arrays a chart will need with np.savez(f"{af.OUT}/manifest.npz", ...).
+- Draw NO charts here — a separate stage does that."""
 
 
 class CodingAgent:
-    """A Claude-Code-style agentic coder — the MATH stage. Writes no charts."""
+    """An autonomous quant-coding agent — the MATH stage. Writes no charts."""
 
     MAX_STEPS = 5
 
     def _system(self) -> str:
         return (
-            "You are the QUANT DEVELOPER on a research team. You receive a research "
-            "plan grounded in real papers and implement its MATHEMATICS faithfully as "
-            "production-quality code. Charts are a later, separate stage — you write "
-            "none.\n\n"
-            "THE RUN IS ONLY GRADED WHEN YOU CALL ad.submit(final_signal). It is the "
-            "REQUIRED final line of your finished script — ad.record(...) saves chart "
-            "data but does NOT grade or finish anything. A run without ad.submit is "
-            "wasted.\n\n"
-            "API REFERENCE (not the strategy — just the correct call SHAPES to imitate; "
-            "you design and compute the actual features from the papers):\n"
-            "```python\n"
-            "import numpy as np\n"
-            "import alphaseek_data as ad\n"
-            "print(ad.describe())                     # ALWAYS inspect the schema first\n"
-            "x = ad.data[ad.columns[0]]               # a (T, N) panel from this dataset\n"
-            "feature = ...                            # <- YOUR construction from the paper,\n"
-            "                                         #    (T, N), causal (past rows only)\n"
-            "sig = ad.zscore(np.nan_to_num(feature))  # cross-sectional z-score, (T, N)\n"
-            "bt = ad.backtest(sig)\n"
-            "print(bt['sharpe'], bt['sharpe_net'], bt['mean_ic'])\n"
-            "ad.record(equity=bt['equity_curve'], ic=ad.ic_series(sig))\n"
-            "ad.submit(sig)                           # REQUIRED final line\n"
-            "```\n"
-            "This shows only the API call SHAPES — the feature/strategy is entirely yours "
-            "to design from the papers. Rules: inspect ad.describe(), use only columns that "
-            "exist; build features CAUSALLY (past rows only — never index future rows or fwd, "
-            "or the look-ahead guard rejects you); z-score/rank accept a single day (1-D) or "
-            "the full (T, N) panel.\n\n"
+            "You are a senior quant researcher and engineer. You are handed a research "
+            "plan grounded in real papers; implement its MATHEMATICS as production code, "
+            "iterate against the backtest, and submit the graded signal. You write every "
+            "line yourself — there is no framework or helper library to lean on beyond "
+            "the tiny sandbox contract below.\n\n"
             + env_spec() + "\n\n" + ENGINEERING + "\n\n"
             "HOW YOU WORK\n"
-            "- ONE tool: run_python(code). Each call runs a FULL standalone script in a "
-            "fresh sandbox (no state persists between runs).\n"
-            "- QUOTING: double-quoted f-strings with single-quoted keys inside "
-            "(f\"ic={res['mean_ic']:.4f}\") — never nest same-type quotes.\n"
-            "- Iterate like an engineer: run, read stdout/tracebacks, fix, refine. Your "
-            "FINAL run must implement the full methodology, print the findings + "
-            "validation table, ad.record(...) the chart data, and ad.submit(final_signal).\n"
-            "- At most " + str(self.MAX_STEPS) + " runs — be efficient (1-3 is typical).\n"
-            "- When satisfied, reply with a 2-3 sentence engineering summary of what you "
-            "did and found, WITHOUT calling the tool; that ends your turn."
+            "- ONE tool: run_python(code) — a fresh sandbox each call (no state persists).\n"
+            "- Load and inspect af.DATA first, then build the paper's construction with "
+            "your own numpy/pandas. Iterate: run, read stdout/tracebacks, fix, refine.\n"
+            "- QUOTING: double-quoted f-strings with single-quoted keys "
+            "(f\"ic={m['mean_ic']:.4f}\") — never nest same-type quotes.\n"
+            "- Your FINAL run must implement the full method, print the findings table, "
+            "np.savez the chart arrays to af.OUT/manifest.npz, and call "
+            "af.submit(final_signal) — that submit is REQUIRED or the run is wasted.\n"
+            "- At most " + str(self.MAX_STEPS) + " runs — be efficient.\n"
+            "- When done, reply with a 2-3 sentence summary WITHOUT calling the tool."
         )
 
     def run(self, step: int, idea: dict, uploads: list[str], uploads_dir,
@@ -316,7 +273,7 @@ class CodingAgent:
         from app.quant.docker_sandbox import run_factor_code
 
         llm = get_llm()
-        uploads_note = f"\nUser uploads via ad.uploads(): {uploads}" if uploads else ""
+        uploads_note = f"\nUser uploads via af.uploads(): {uploads}" if uploads else ""
         prior = ("\n".join(c[:300] for c in tried_code[-2:])) if tried_code else "(none)"
         method = "\n".join(f"  {i+1}. {m}" for i, m in enumerate(idea.get("methodology", [])))
         targets = "\n".join(f"  - {t}" for t in idea.get("validation_targets", []))
@@ -334,8 +291,8 @@ class CodingAgent:
                         f"VALIDATION TARGETS (reproduce & compare):\n{targets or '  (none given)'}\n"
                         f"ACCEPTANCE: {idea.get('acceptance', '')}{uploads_note}{lit}{lessons_note}"
                         f"Code from earlier rounds (yours must differ):\n{prior}\n\n"
-                        "Implement the MATH now. Compute the signal, ad.record(...) the "
-                        "chart data, and END with ad.submit(final_signal) — that last line "
+                        "Implement the MATH now. Compute the signal, np.savez the chart arrays to af.OUT/manifest.npz, and "
+                        "END with af.submit(final_signal) — that last line "
                         "is mandatory or the run is wasted. Write no charts."),
         }]
         final = None
@@ -367,7 +324,7 @@ class CodingAgent:
                 messages.append({"role": "user",
                                  "content": ("You did not call the run_python tool. Do not explain — "
                                              "CALL run_python now with the complete research script "
-                                             "that ends in ad.submit(final_signal).")})
+                                             "that ends in af.submit(final_signal).")})
                 continue
 
             tc = resp["tool_calls"][0]
@@ -419,12 +376,12 @@ class CodingAgent:
                 if not bt.get("submitted"):
                     got = bt.get("manifest_keys") or []
                     tool_result["hint"] = (
-                        "This run did NOT call ad.submit(final_signal) — nothing was graded. "
+                        "This run did NOT call af.submit(final_signal) — nothing was graded. "
                         + (f"You already recorded {got} and the math ran cleanly; send the "
-                           "SAME script with the single line ad.submit(<your final (T,N) signal>) "
+                           "SAME script with the single line af.submit(<your final (T,N) signal>) "
                            "added at the end." if got else
-                           "Finish the methodology, ad.record(...) the chart data, then "
-                           "ad.submit(final_signal)."))
+                           "Finish the methodology, np.savez chart arrays to af.OUT/manifest.npz, then "
+                           "af.submit(final_signal)."))
                 yield {"type": "backtest", "step": step, "agent": "Backtester",
                        "name": idea["name"], "result": bt,
                        "engine": bt.get("engine", ""),
@@ -463,13 +420,13 @@ class Visualizer:
             "that tell the story of the result.\n\n"
             + env_spec() + "\n\n" + CHART_CRAFT + "\n\n"
             "RULES\n"
-            "- Start with `d = ad.manifest()` — a dict of the recorded arrays/values. "
+            "- Start with `d = af.manifest()` — a dict of the recorded arrays/values. "
             "Wrap numeric fields in np.asarray as needed.\n"
-            "- Use ONLY manifest data (and ad.PLOTLY_LAYOUT). Do NOT recompute signals, "
-            "do NOT call ad.backtest or ad.submit, do NOT import the modeling libs.\n"
+            "- Use ONLY manifest data (via af.manifest()). Do NOT recompute signals, "
+            "do NOT call af.backtest or af.submit.\n"
             "- Choose the charts the RESULTS justify: a 3D surface for a sweep grid, a "
             "fan for MC paths, an annotated heatmap for regimes, lines for equity/IC.\n"
-            "- Save each figure: fig.write_html(f\"{ad.ARTIFACTS}/<name>.html\", "
+            "- Save each figure: fig.write_html(f\"{af.OUT}/<name>.html\", "
             "include_plotlyjs=\"cdn\").\n"
             "- Output ONLY the complete Python script."
         )
@@ -478,7 +435,7 @@ class Visualizer:
         llm = get_llm()
         keys = ", ".join(manifest_keys) or "(none recorded)"
         user = (f"USER'S GOAL: {goal}\nEXPERIMENT: {idea['name']} — {idea['hypothesis']}\n"
-                f"MANIFEST KEYS available via ad.manifest(): {keys}\n"
+                f"MANIFEST KEYS available via af.manifest(): {keys}\n"
                 f"What the math printed:\n{(stdout or '')[:600]}\n\n"
                 "Write the visualization script. Load the manifest, chart the story. Code only.")
         out = llm.chat(self._system(), user, temperature=0.3, max_tokens=4000, role="viz")
