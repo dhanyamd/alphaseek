@@ -8,97 +8,112 @@ of QuantPad's research agent.
 
 ---
 
-## System architecture (current)
+## System architecture
 
 ```
                          ┌───────────────────────────────────────────────┐
   Browser (Next.js IDE)  │  chat · CodeMirror editor · artifact viewer    │
    left: files/sessions  │  right: agent pipeline strip + live feed       │
         │  ▲              └───────────────────────────────────────────────┘
-   HTTP │  │ SSE (event stream)
+   HTTP │  │ SSE  +  WebSocket (/api/sessions/{id}/ws)
         ▼  │
   ┌──────────────────────────── FastAPI (app/main.py) ────────────────────────┐
-  │  /api/login  /api/sessions  /api/sessions/{id}/stream (SSE)                │
-  │  /api/sessions/{id}/upload  /run  /api/artifacts/{name}                    │
-  │  a worker THREAD runs the research generator; every event is persisted to  │
-  │  SQLite; the SSE endpoint TAILS the DB (disconnect/refresh-proof)          │
-  └───────────────┬───────────────────────────────────────────┬──────────────┘
-                  │                                            │
-        ┌─────────▼──────────┐                        ┌────────▼─────────┐
-        │  SQLite (db.py)    │                        │ Orchestrator     │
-        │  users/sessions/   │                        │ (agent/orchestr.)│
-        │  events            │                        └────────┬─────────┘
-        └────────────────────┘                                 │  streams handoffs
-                                                               ▼
-   LITERATURE (once/prompt)          ROUNDS (per iteration)
-   ┌──────────────────────┐   ┌───────────────────────────────────────────────┐
-   │ Researcher.queries   │   │ Synthesist  → connect papers → novel plan +    │
-   │ → OpenAlex/S2/arXiv   │   │               pip requirements                 │
-   │ → rank (fastembed)    │   │ Provision   → cached dep-layer image (allow-   │
-   │ → Reader (Jina +      │   │               listed, network-gated build)     │
-   │   embed + 1 LLM call) │   │ Quant Coder → MATH ONLY, agentic run/fix loop, │
-   │ → PaperBriefs         │   │               records a result manifest        │
-   └──────────────────────┘   │ Visualizer  → loads manifest, renders plotly   │
-                              │ Risk Critic → grades edge + overfit            │
-                              │ Reporter    → grounded answer + next steps     │
-                              └───────────────────────┬───────────────────────┘
-                                                      │ run code
-                                          ┌───────────▼───────────────┐
-                                          │  Docker sandbox            │
-                                          │  --network none, non-root, │
-                                          │  read-only, cpu/mem caps   │
-                                          │  runs sandbox/runner.py     │
-                                          │  mounts: runner, data(ro),  │
-                                          │  uploads(ro), manifest      │
-                                          └───────────┬───────────────┘
-                                                      │ import alphaseek_data as ad
-                                          ┌───────────▼───────────────┐
-                                          │  data/market.npz (yfinance)│
-                                          │  RAW panels only: close,   │
-                                          │  volume, returns + hidden  │
-                                          │  fwd (grading target)      │
-                                          └────────────────────────────┘
+  │  login · sessions · upload · run · artifacts · stream (SSE) · ws (WebSocket)│
+  │  events persisted to the store; live events fan out over the Redis bus      │
+  └──────┬───────────────────────────┬───────────────────────────┬────────────┘
+         │ enqueue                    │ persist                   │ publish
+         ▼                            ▼                           ▼
+  ┌─────────────┐            ┌──────────────────┐        ┌────────────────┐
+  │ arq worker  │            │  STORE (facade)  │        │  Redis pub/sub  │
+  │ (app/tasks) │            │  Postgres ⇢ or   │        │  (app/bus)      │
+  │ runs a run  │            │  SQLite fallback │        └────────────────┘
+  └──────┬──────┘            └──────────────────┘
+         │ research(seed) generator (app/agent/orchestrator)
+         ▼
+  LITERATURE (once/prompt)          ROUNDS (per iteration)
+  ┌──────────────────────┐   ┌────────────────────────────────────────────────┐
+  │ Researcher: queries  │   │ Synthesist  → connect papers → novel plan +     │
+  │ → OpenAlex/S2/arXiv   │   │               pip requirements                  │
+  │ → agentic RAG          │   │ Provision   → cached dep-layer image            │
+  │   (Qdrant + fastembed) │   │ Quant Coder → MATH ONLY, agentic run/fix loop,  │
+  │ → Reader → PaperBriefs │   │               autonomous (writes all its code)  │
+  └──────────────────────┘   │ Visualizer  → loads manifest, renders plotly    │
+                            │ Risk Critic → grades edge + overfit             │
+    LLM calls via           │ Reporter    → grounded answer + next steps      │
+    app/agent/llm.py        └──────────────────────┬──────────────────────────┘
+    (multi-provider,                               │ run code
+     failover, pacing)                 ┌───────────▼───────────────┐
+    — optionally through a             │  Docker sandbox            │
+    LiteLLM gateway                    │  --network none, non-root, │
+                                       │  read-only, cpu/mem caps   │
+                                       │  runs sandbox/runner.py     │
+                                       └───────────┬───────────────┘
+                                                   │ import alphaseek as af
+                                       ┌───────────▼───────────────┐
+                                       │  MINIMAL CONTRACT (6 items)│
+                                       │  af.DATA  af.OUT           │
+                                       │  af.backtest  af.submit    │
+                                       │  af.manifest  af.uploads   │
+                                       │  raw yfinance panels;      │
+                                       │  fwd hidden + LA guard     │
+                                       └────────────────────────────┘
+                       artifacts → S3 (+ presigned) or local disk
 ```
 
-**Key design decisions**
-- **No pre-computed features, no hardcoded strategy logic.** The sandbox exposes
-  only raw point-in-time panels (`ad.data['close']`, `ad.returns()`, `ad.volume()`)
-  and a runtime schema (`ad.describe()`). The agent derives *every* feature itself
-  from the papers. The universe/history are env config (`ALPHASEEK_UNIVERSE`,
-  `ALPHASEEK_YEARS`), not baked in.
-- **Grading integrity.** Forward returns are never exposed; a look-ahead guard
-  rejects any submitted signal whose IC is implausibly high (future-peeking).
-- **Math first, visuals last.** The coder writes pure math and records a manifest;
-  a separate Visualizer stage loads that manifest and plots — a chart bug can
-  never lose a validated result.
-- **Model routing + failover.** Per-role model chains across providers
-  (`LLM_MODEL_<ROLE>`, primary + secondary buckets) with client-side pacing and
-  `reasoning_effort` control for thinking models.
-- **Nothing canned.** No mocks, no silent fallbacks — every failure is a visible
-  event.
+**Design principles**
+- **Autonomous coder, minimal contract.** The sandbox exposes exactly six things
+  (`af.DATA`, `af.OUT`, `af.backtest`, `af.submit`, `af.manifest`, `af.uploads`).
+  The agent loads the raw data file, inspects it, and writes *every* feature,
+  estimator, and signal itself with numpy/pandas/scipy/sklearn — no DSL, no
+  pre-computed features, no hardcoded strategy logic.
+- **Grading integrity.** Forward returns are never exposed; `af.submit` grades
+  against hidden data, and a look-ahead guard rejects future-peeking signals.
+- **Math first, visuals last.** The coder saves a result manifest (`np.savez`); a
+  separate Visualizer stage loads it and plots — a chart bug can't lose a result.
+- **Nothing canned.** No mocks, no silent fallbacks — every failure is a visible event.
 
-**Repo layout**
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js, CodeMirror, Geist |
+| API | FastAPI, SSE + WebSockets |
+| Persistence | **Postgres** (JSONB events) with SQLite fallback |
+| Queue / streaming | **Redis** (arq job queue + pub/sub bus) |
+| Vector store / RAG | **Qdrant** (Cloud or local) + fastembed (ONNX, no torch) |
+| Object storage | **S3 + presigned URLs** (local disk fallback) |
+| LLM routing | multi-provider client + optional **LiteLLM gateway** |
+| Sandbox | Docker (`--network none`), quant stack: numpy, pandas, scipy, scikit-learn, statsmodels, empyrical, alphalens, arch, cvxpy, quantstats, plotly |
+| Literature | OpenAlex / Semantic Scholar / arXiv + Jina Reader |
+| Data | yfinance (raw daily panels) |
+
+**Backend layout**
 ```
-backend/
-  app/main.py            FastAPI: sessions, SSE streaming, uploads, artifacts
-  app/db.py              SQLite persistence (users/sessions/events)
-  app/agent/
-    orchestrator.py      runs the multi-agent pipeline, streams events
-    agents.py            Researcher, Synthesist, CodingAgent, Visualizer, Critic, Reporter
-    llm.py               multi-provider OpenAI-compatible client (routing/failover/pacing)
-    reader.py            PaperQA-style reader (chunk → embed-rank → 1 LLM reduce)
-    research_tools.py    OpenAlex/S2/arXiv search + Jina full-text
-    memory.py, evaluate.py
-  app/quant/
-    dataset.py           yfinance → raw market.npz (env-configurable universe)
-    docker_sandbox.py    runs agent code in a hardened container + provisioning
-    provision.py         agent-declared pip deps → cached, allowlisted image layers
-    backtest.py          FactorError type
+backend/app/
+  main.py          FastAPI: sessions, SSE + WebSocket streaming, uploads, artifacts
+  settings.py      one place all service URLs/creds/toggles resolve from env
+  store.py         persistence facade → pg.py (Postgres) or db.py (SQLite)
+  bus.py           Redis pub/sub event bus
+  tasks.py         arq worker (run `arq app.tasks.WorkerSettings`)
+  storage.py       artifact store (local + S3)
+  agent/
+    orchestrator.py  runs the multi-agent pipeline, streams events
+    agents.py        Researcher, Synthesist, CodingAgent, Visualizer, Critic, Reporter
+    llm.py           multi-provider client (routing / failover / pacing)
+    rag.py           Qdrant agentic RAG (index / search / retrieve→judge→refine)
+    reader.py        PaperQA-style reader (chunk → embed-rank → 1 LLM reduce)
+    research_tools.py OpenAlex/S2/arXiv search + Jina full-text
+  quant/
+    dataset.py       yfinance → raw market.npz (env-configurable universe)
+    docker_sandbox.py runs agent code in a hardened container + provisioning
+    provision.py     agent-declared pip deps → cached, allowlisted image layers
 sandbox/
-  runner.py              in-container data API (ad.*) + grading + look-ahead guard
-  Dockerfile             base image with the quant stack (empyrical/alphalens/arch/cvxpy/...)
-frontend/                Next.js IDE (chat, editor, artifact viewer, agent strip)
-docker-compose.yml       v3 infra: Redis, Postgres, Qdrant
+  runner.py          the `alphaseek` module (6-item contract) + grading + LA guard
+  Dockerfile         base image with the quant stack
+docker-compose.yml   Redis, Postgres, Qdrant, LiteLLM
+litellm-config.yaml  LLM gateway routing/failover
 ```
 
 ---
@@ -106,7 +121,7 @@ docker-compose.yml       v3 infra: Redis, Postgres, Qdrant
 ## How to run
 
 ### Prerequisites
-- Python 3.12, Node 18+, Docker, `uv`
+Python 3.12, Node 18+, Docker, `uv`.
 
 ### 1. Backend deps
 ```bash
@@ -114,7 +129,7 @@ cd backend
 uv venv && uv pip install -r requirements.txt
 cp .env.example .env            # then set LLM_API_KEY etc.
 ```
-Set at least one provider in `.env`:
+Minimum config in `backend/.env`:
 ```
 LLM_API_KEY=...                 # e.g. a Gemini AI Studio key
 LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
@@ -130,22 +145,40 @@ docker build -t alphaseek-sandbox:base .
 docker tag alphaseek-sandbox:base alphaseek-sandbox:latest
 ```
 
-### 3. Run the backend
+### 3. (Optional) v3 infrastructure
+```bash
+docker compose up -d            # Redis, Postgres, Qdrant, LiteLLM
+docker compose ps               # all healthy
+```
+Then enable the pieces you want in `backend/.env`:
+```
+DATABASE_URL=postgresql://alphaseek:alphaseek@localhost:5432/alphaseek   # use Postgres
+REDIS_URL=redis://localhost:6379/0
+USE_REDIS_BUS=1                                                          # WS via Redis
+# Qdrant Cloud (or omit for local Docker Qdrant):
+QDRANT_CLUSTER_ENDPOINT=https://<cluster>.cloud.qdrant.io
+QDRANT_API_KEY=...
+# S3 artifacts (or omit for local disk):
+ARTIFACT_S3_BUCKET=my-bucket   AWS_REGION=us-east-1
+```
+To run research in worker processes instead of the API thread:
+```bash
+cd backend && .venv/bin/python -m arq app.tasks.WorkerSettings
+```
+To route LLM calls through the gateway, put `GEMINI_API_KEY` / `OPENROUTER_API_KEY`
+in a repo-root `.env`, `docker compose up -d litellm`, then set
+`LLM_BASE_URL=http://localhost:4000` in `backend/.env`.
+
+### 4. Run the backend
 ```bash
 cd backend && .venv/bin/python -m uvicorn app.main:app --port 8000
 ```
-First start downloads market data from yfinance into `data/market.npz` (a few
-seconds). Health: `curl localhost:8000/api/health`.
+First start downloads market data from yfinance into `data/market.npz`.
+Health: `curl localhost:8000/api/health`.
 
-### 4. Run the frontend
+### 5. Run the frontend
 ```bash
 cd frontend && npm install && npm run dev        # http://localhost:3000
-```
-
-### 5. v3 infrastructure (Redis / Postgres / Qdrant)
-```bash
-docker compose up -d            # from repo root
-docker compose ps               # all healthy
 ```
 
 ### Configuration reference
@@ -155,13 +188,17 @@ docker compose ps               # all healthy
 | `LLM_API_KEY_2` / `LLM_BASE_URL_2` / `LLM_MODELS_2` | — | secondary failover bucket |
 | `LLM_MODEL_<ROLE>` | — | per-role model chain (RESEARCHER/CODER/VIZ/CRITIC/REPORTER/READER) |
 | `LLM_MIN_INTERVAL_PRIMARY` | 0 | seconds between calls (rate-limit pacing) |
+| `DATABASE_URL` | (SQLite) | Postgres connection string; unset ⇒ SQLite |
+| `REDIS_URL` | redis://localhost:6379/0 | queue + pub/sub |
+| `USE_REDIS_BUS` | 0 | WebSocket streams via Redis instead of DB tail |
+| `QDRANT_CLUSTER_ENDPOINT` / `QDRANT_API_KEY` | (local :6333) | Qdrant Cloud |
+| `ARTIFACT_S3_BUCKET` / `AWS_REGION` | (local disk) | S3 artifact storage |
 | `ALPHASEEK_UNIVERSE` | 85 large-caps | comma-separated tickers |
 | `ALPHASEEK_YEARS` | 6 | years of daily history |
 
 ---
 
-## Roadmap (v3, in progress)
-Infra foundation up (`docker-compose.yml`). Staged wiring: Postgres event store →
-arq worker queue + Redis pub/sub → WebSocket streaming → LiteLLM gateway →
-Langfuse/OpenTelemetry observability → S3 artifacts → Qdrant paper archive.
-The data-ingestion pillar (Kafka → Snowflake → dbt) is a separate subsystem.
+## Roadmap
+Data-ingestion pillar (Kafka → Snowflake → dbt) for streaming market feeds;
+Langfuse/OpenTelemetry tracing; Firecracker/E2B executor tier; Pine Script /
+MQL5 export of validated strategies.
