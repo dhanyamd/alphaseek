@@ -2,40 +2,51 @@
 the environment with safe defaults. No service URL, credential, or knob is
 hardcoded in application code; they resolve here.
 """
+
 from __future__ import annotations
 
-import os
+from pathlib import Path
 
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Load .env BEFORE reading any variable, regardless of import order elsewhere.
-load_dotenv()
-
-
-def _b(name: str, default: bool) -> bool:
-    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+_ENV = str(Path(__file__).resolve().parents[1] / ".env")
 
 
-class Settings:
-    # --- persistence: SQLite today, Postgres when DATABASE_URL is set (v3) ---
-    database_url: str = os.getenv("DATABASE_URL", "").strip()          # postgres://... enables PG
-    sqlite_path: str = os.getenv("ALPHASEEK_SQLITE", "alphaseek.db")
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=_ENV, env_file_encoding="utf-8", extra="ignore")
+
+    # --- persistence: Postgres only ---
+    database_url: str  # required — postgres://user:pass@host:5432/dbname
 
     # --- redis: queue broker + live pub/sub + cache ---
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url: str = "redis://localhost:6379/0"
 
     # --- vector store: Qdrant Cloud (endpoint + key) or local Docker (no key) ---
-    qdrant_url: str = (os.getenv("QDRANT_CLUSTER_ENDPOINT", "").strip()
-                       or os.getenv("QDRANT_URL", "http://localhost:6333"))
-    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "").strip()
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
 
     # --- object storage: artifacts (charts/manifests); local disk when unset ---
-    s3_bucket: str = os.getenv("ARTIFACT_S3_BUCKET", "").strip()       # bucket enables S3
-    s3_region: str = os.getenv("AWS_REGION", "us-east-1")
-    s3_prefix: str = os.getenv("ARTIFACT_S3_PREFIX", "artifacts")
+    artifact_s3_bucket: str = ""  # bucket enables S3
+    aws_region: str = "us-east-1"
+    artifact_s3_prefix: str = "artifacts"
 
-    # --- streaming transport: DB-tailing SSE today, Redis pub/sub when enabled ---
-    use_redis_bus: bool = _b("USE_REDIS_BUS", False)
+    # --- streaming transport: Redis pub/sub (default) or Redpanda (durable log) ---
+    use_redis_bus: bool = True
+    use_redpanda_bus: bool = False
+    redpanda_brokers: str = "localhost:9092"
+
+    # --- web search: Exa neural search (free tier: 1000 req/mo) ---
+    exa_api_key: str = ""
+
+    # --- sandbox security ---
+    allow_inprocess: bool = False  # must be explicitly enabled for dev fallback
+    sandbox_timeout: int = 120  # max seconds per sandbox run
+    docker_memory: str = "2g"  # memory cap per container
+    docker_cpus: str = "2"  # CPU count per container
+
+    # --- embedding model (single source of truth for name + dim) ---
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_dim: int = 384
 
     @property
     def use_postgres(self) -> bool:
@@ -43,7 +54,7 @@ class Settings:
 
     @property
     def use_s3(self) -> bool:
-        return bool(self.s3_bucket)
+        return bool(self.artifact_s3_bucket)
 
 
 settings = Settings()

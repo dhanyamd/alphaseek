@@ -5,6 +5,7 @@ export type Session = {
   id: number;
   seed: string;
   iterations: number;
+  mode: string;
   status: string;
   created: number;
   best: any | null;
@@ -25,11 +26,11 @@ export async function listSessions(user: string): Promise<Session[]> {
   return j.sessions ?? [];
 }
 
-export async function createSession(user: string, seed: string, iterations: number): Promise<number> {
+export async function createSession(user: string, seed: string, iterations: number, mode: string): Promise<number> {
   const r = await fetch(`${API}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user, seed, iterations }),
+    body: JSON.stringify({ user, seed, iterations, mode }),
   });
   const j = await r.json();
   return j.id;
@@ -40,10 +41,11 @@ export async function getSession(id: number) {
   return r.json();
 }
 
-export async function uploadFile(id: number, file: File): Promise<string[]> {
+export async function uploadFile(id: number, file: File, replaceDefault = false): Promise<string[]> {
   const fd = new FormData();
   fd.append("file", file);
-  const r = await fetch(`${API}/api/sessions/${id}/upload`, { method: "POST", body: fd });
+  const params = replaceDefault ? "?replace_default=true" : "";
+  const r = await fetch(`${API}/api/sessions/${id}/upload${params}`, { method: "POST", body: fd });
   const j = await r.json();
   return j.files ?? [];
 }

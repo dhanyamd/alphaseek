@@ -18,6 +18,7 @@ cross-session paper archive justifies it.
 A brief that the model marks irrelevant is dropped — a paper is evidence only
 when it actually informs the goal (relevance gate, no padding).
 """
+
 from __future__ import annotations
 
 import re
@@ -55,11 +56,13 @@ class PaperBrief:
         steps = "\n".join(f"    {i + 1}. {s}" for i, s in enumerate(self.method_steps))
         nums = "; ".join(self.reported_numbers) or "(none extracted)"
         pits = "; ".join(self.pitfalls) or "(none)"
-        return (f"PAPER: {self.cite()}\n"
-                f"  claim: {self.claim}\n"
-                f"  method:\n{steps or '    (not extracted)'}\n"
-                f"  reported numbers: {nums}\n"
-                f"  pitfalls: {pits}")
+        return (
+            f"PAPER: {self.cite()}\n"
+            f"  claim: {self.claim}\n"
+            f"  method:\n{steps or '    (not extracted)'}\n"
+            f"  reported numbers: {nums}\n"
+            f"  pitfalls: {pits}"
+        )
 
 
 def read_paper(goal: str, paper: Paper) -> PaperBrief:
@@ -98,24 +101,40 @@ _embedder = None
 
 def _get_embedder():
     """Lazy singleton — the ONNX model loads once per process (~2s warm)."""
+    from app.settings import settings as _s
+
     global _embedder
     if _embedder is None:
         from fastembed import TextEmbedding
-        _embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
+
+        _embedder = TextEmbedding(_s.embedding_model)
     return _embedder
 
 
 def _chunk(text: str) -> list[str]:
     step = CHUNK_CHARS - CHUNK_OVERLAP
-    return [text[i:i + CHUNK_CHARS] for i in range(0, max(len(text) - CHUNK_OVERLAP, 1), step)]
+    return [text[i : i + CHUNK_CHARS] for i in range(0, max(len(text) - CHUNK_OVERLAP, 1), step)]
 
 
 def _terms(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z]{3,}", text.lower()) if w not in _STOPWORDS}
 
 
-_METHOD_TERMS = frozenset({"method", "methodology", "construct", "estimate", "regression",
-                           "portfolio", "returns", "table", "results", "sharpe", "alpha"})
+_METHOD_TERMS = frozenset(
+    {
+        "method",
+        "methodology",
+        "construct",
+        "estimate",
+        "regression",
+        "portfolio",
+        "returns",
+        "table",
+        "results",
+        "sharpe",
+        "alpha",
+    }
+)
 
 
 def _top_chunks(goal: str, text: str) -> list[str]:
@@ -133,7 +152,7 @@ def _top_chunks(goal: str, text: str) -> list[str]:
     boost = np.array([len(_METHOD_TERMS & _terms(c)) / len(_METHOD_TERMS) for c in chunks])
     scores = cosine + 0.1 * boost
 
-    top = sorted(np.argsort(scores)[-TOP_CHUNKS:].tolist())   # document order
+    top = sorted(np.argsort(scores)[-TOP_CHUNKS:].tolist())  # document order
     return [chunks[i] for i in top]
 
 
@@ -144,8 +163,8 @@ _SYSTEM = (
     "not in the excerpts; use empty values when the excerpts do not say. Respond "
     "with ONLY JSON: {"
     '"relevant": true unless the paper is CLEARLY off-topic (different asset class '
-    'or an unrelated problem) — a paper about any factor, risk model, or method the '
-    'goal touches counts as relevant; be inclusive, not strict, '
+    "or an unrelated problem) — a paper about any factor, risk model, or method the "
+    "goal touches counts as relevant; be inclusive, not strict, "
     '"claim": "the paper\'s central claim in one sentence", '
     '"method_steps": ["the method as concrete ordered steps, equations as pseudocode"], '
     '"parameters": {"name": "value"} (windows, thresholds, formation periods), '
@@ -156,9 +175,11 @@ _SYSTEM = (
 
 def _brief_from_excerpts(goal: str, paper: Paper, excerpts: list[str]) -> PaperBrief:
     body = "\n---\n".join(excerpts)[:26_000]
-    user = (f"RESEARCH GOAL: {goal}\n\n"
-            f"PAPER: {paper.label()}  [{'full text' if paper.full_text else 'abstract only'}]\n\n"
-            f"EXCERPTS:\n{body}\n\nExtract the brief. JSON only.")
+    user = (
+        f"RESEARCH GOAL: {goal}\n\n"
+        f"PAPER: {paper.label()}  [{'full text' if paper.full_text else 'abstract only'}]\n\n"
+        f"EXCERPTS:\n{body}\n\nExtract the brief. JSON only."
+    )
     out = get_llm().chat_json(_SYSTEM, user, temperature=0.2, role="reader")
     return PaperBrief(
         title=paper.title,

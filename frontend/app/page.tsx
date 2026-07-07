@@ -4,10 +4,12 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { python } from "@codemirror/lang-python";
 import { oneDark } from "@codemirror/theme-one-dark";
-import EquityChart from "@/components/EquityChart";
+import CodeBlock from "@/components/CodeBlock";
+import StrategyViewer from "@/components/StrategyViewer";
 import { API, Session, createSession, getSession, listSessions, login, runScript, streamResearch, uploadFile } from "@/lib/api";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
+const TVChart = dynamic(() => import("@/components/TVChart"), { ssr: false });
 
 const AGENTS = ["Researcher", "Synthesist", "Quant Coder", "Backtester", "Visualizer", "Risk Critic", "Archivist"];
 
@@ -40,23 +42,48 @@ export default function Page() {
 /* -------------------------------------------------------------- workspace */
 type Tab = { kind: "file" | "artifact"; id: string };
 
+function ResizeHandle({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  return (
+    <div onMouseDown={(e) => {
+      e.preventDefault();
+      dragging.current = true;
+      document.body.style.userSelect = "none";
+      const start = e.clientX;
+      const handler = (ev: MouseEvent) => { if (dragging.current) onDrag(ev.clientX - start); };
+      const stop = () => { dragging.current = false; document.body.style.userSelect = ""; document.removeEventListener("mousemove", handler); document.removeEventListener("mouseup", stop); };
+      document.addEventListener("mousemove", handler);
+      document.addEventListener("mouseup", stop, { once: true });
+    }}
+    className="w-2 cursor-col-resize shrink-0 flex items-center justify-center hover:bg-[#38383c] transition-colors group"
+    title="drag to resize">
+      <div className="w-0.5 h-6 rounded-full bg-[#2a2a2e] group-hover:bg-[#5a5a5e] transition-colors" />
+    </div>
+  );
+}
+
 function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const [rounds, setRounds] = useState(3);
+  const [researchMode, setResearchMode] = useState("factor");
   const [events, setEvents] = useState<any[]>([]);
   const [running, setRunning] = useState(false);
   const [execRunning, setExecRunning] = useState(false);
   const [best, setBest] = useState<any | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [meta, setMeta] = useState<{ mode?: string; engine?: string }>({});
+  const [meta, setMeta] = useState<{ mode?: string; engine?: string; researchMode?: string }>({});
   const [files, setFiles] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [artifacts, setArtifacts] = useState<string[]>([]);
+  const [exportData, setExportData] = useState<Record<string, { code: string; bt_data: string | null; lang: string }>>({});
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [active, setActive] = useState<Tab | null>(null);
   const [uploadChips, setUploadChips] = useState<string[]>([]);
+  const [replaceDefault, setReplaceDefault] = useState(false);
+  const [leftW, setLeftW] = useState(200);
+  const [rightW, setRightW] = useState(340);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -86,7 +113,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
 
   // one ingestion path for live events AND replay — workspace state is derived
   function ingest(ev: any, live: boolean) {
-    if (ev.type === "start") setMeta({ mode: ev.mode, engine: ev.engine });
+    if (ev.type === "start") setMeta({ mode: ev.mode, engine: ev.engine, researchMode: ev.research_mode });
     if (ev.type === "search")
     return (
       <div className="animate-in card p-2.5">
@@ -119,6 +146,11 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
       if (!ev.exploration && typeof ev.result.sharpe === "number")
         setBest((b: any) => (!b || ev.result.sharpe > b.sharpe ? { ...ev.result, name: ev.name } : b));
     }
+    if (ev.type === "export" && ev.filename) {
+      setExportData((d) => ({ ...d, [ev.filename]: { code: ev.code, bt_data: ev.bt_data ?? null, lang: ev.lang } }));
+      setArtifacts((a) => (a.includes(ev.filename) ? a : [...a, ev.filename]));
+      if (live) openTab({ kind: "artifact", id: ev.filename });
+    }
     if (ev.type === "done") {
       setBest(ev.best ?? null);
       setRunning(false); refresh();
@@ -136,7 +168,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
 
   async function ensureSession(seedText: string): Promise<number> {
     if (sessionId !== null) return sessionId;
-    const id = await createSession(user, seedText, rounds);
+    const id = await createSession(user, seedText, rounds, researchMode);
     setSessionId(id);
     return id;
   }
@@ -153,7 +185,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
 
   async function attach(file: File) {
     const id = await ensureSession(file.name);
-    const names = await uploadFile(id, file);
+    const names = await uploadFile(id, file, replaceDefault);
     setUploadChips(names);
     setEvents((p) => [...p, { type: "upload", filename: file.name }]);
   }
@@ -171,7 +203,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
   function newChat() {
     if (running) return;
     setSessionId(null); setEvents([]); setBest(null); setSuggestions([]);
-    setFiles({}); setDrafts({}); setArtifacts([]); setTabs([]); setActive(null); setUploadChips([]);
+    setFiles({}); setDrafts({}); setArtifacts([]); setTabs([]); setActive(null); setUploadChips([]); setReplaceDefault(false);
   }
 
   async function runActive() {
@@ -192,6 +224,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
       <header className="h-12 shrink-0 border-b hair flex items-center px-4 gap-3">
         <span className="font-semibold tracking-tight">AlphaSeek</span>
         <div className="ml-auto flex items-center gap-3 text-[11px] text-muted">
+          {meta.researchMode && <span className="px-2 py-0.5 border border-border rounded">{meta.researchMode}</span>}
           {meta.engine && <span className="px-2 py-0.5 border border-border rounded">sandbox {meta.engine}</span>}
           {meta.mode && <span className="px-2 py-0.5 border border-border rounded">llm {meta.mode}</span>}
           <span className="text-text">{user}</span>
@@ -199,9 +232,9 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
         </div>
       </header>
 
-      <div className="flex-1 grid grid-cols-[230px_1fr_400px] min-h-0">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* LEFT: workspace + sessions */}
-        <aside className="border-r hair flex flex-col min-h-0">
+        <aside style={{ width: leftW }} className="shrink-0 border-r hair flex flex-col min-h-0">
           <div className="p-2.5 border-b hair">
             <button onClick={newChat} className="btn-outline w-full py-1.5 text-[12.5px]">New chat</button>
           </div>
@@ -230,21 +263,22 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
                 className={`card p-2 text-[11.5px] w-full text-left hover:border-border2 transition-colors ${s.id === sessionId ? "border-border2" : ""}`}>
                 <div className="truncate text-text/85">{s.seed}</div>
                 <div className="flex justify-between mt-1 text-[10.5px] text-faint">
-                  <span className="tnum">#{s.id}</span><span>{s.status}</span>
+                  <span className="tnum">#{s.id}</span><span>{s.mode ?? "factor"} · {s.status}</span>
                 </div>
               </button>
             ))}
           </div>
         </aside>
+        <ResizeHandle onDrag={(d) => setLeftW(Math.max(140, Math.min(400, leftW + d)))} />
 
         {/* CENTER: editor / artifact viewer */}
-        <main className="flex flex-col min-h-0 border-r hair">
+        <main className="flex-1 flex flex-col min-h-0">
           <div className="h-10 shrink-0 border-b hair flex items-stretch overflow-x-auto">
             {tabs.map((t) => (
               <div key={t.kind + t.id}
                 className={`flex items-center gap-2 px-3 text-[12px] border-r hair cursor-pointer whitespace-nowrap ${active?.kind === t.kind && active.id === t.id ? "bg-surface text-text" : "text-muted hover:text-text"}`}
                 onClick={() => setActive(t)}>
-                <span className="text-faint">{t.kind === "file" ? "py" : t.id.endsWith(".html") ? "3d" : "img"}</span>
+                <span className="text-faint">{t.kind === "file" ? "py" : t.id.endsWith(".html") ? "3d" : t.id.endsWith(".pine") ? "📈" : t.id.endsWith(".mq5") ? "⚙" : "img"}</span>
                 {t.kind === "artifact" ? t.id.replace(/^[0-9a-f]+_/, "") : t.id}
                 <span className="text-faint hover:text-text" onClick={(e) => { e.stopPropagation(); closeTab(t); }}>×</span>
               </div>
@@ -278,6 +312,12 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
               active.id.endsWith(".html") ? (
                 <iframe src={`${API}/api/artifacts/${active.id}`} title={active.id}
                   sandbox="allow-scripts" className="w-full h-full bg-[#111112]" />
+              ) : active.id.endsWith(".pine") || active.id.endsWith(".mq5") ? (
+                <StrategyViewer
+                  code={exportData[active.id]?.code ?? ""}
+                  lang={active.id.endsWith(".pine") ? "pine" : "mql5"}
+                  btDataFilename={exportData[active.id]?.bt_data ?? null}
+                />
               ) : (
                 <div className="h-full overflow-auto grid place-items-center p-4">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -288,9 +328,10 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
             )}
           </div>
         </main>
+        <ResizeHandle onDrag={(d) => setRightW(Math.max(200, Math.min(600, rightW + d)))} />
 
-        {/* RIGHT: chat */}
-        <aside className="flex flex-col min-h-0">
+        {/* RIGHT: event feed */}
+        <aside style={{ width: rightW }} className="shrink-0 border-l hair flex flex-col min-h-0">
           <div className="shrink-0 border-b hair px-4 py-2 flex items-center gap-1.5 overflow-x-auto">
             {AGENTS.map((a, i) => (
               <div key={a} className="flex items-center gap-1.5 whitespace-nowrap">
@@ -324,26 +365,52 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
             {uploadChips.length > 0 && (
               <div className="flex gap-1.5 mb-2 flex-wrap">
                 {uploadChips.map((f, i) => (
-                  <span key={i} className="text-[10.5px] text-muted border border-border rounded px-1.5 py-0.5">{f}</span>
+                  <span key={i} className="flex items-center gap-1 text-[10.5px] text-muted border border-border rounded px-1.5 py-0.5">
+                    {f}
+                    <button onClick={() => setUploadChips((p) => p.filter((_, j) => j !== i))}
+                      className="text-faint hover:text-text">×</button>
+                  </span>
                 ))}
               </div>
             )}
             <div className="flex items-end gap-1.5">
-              <input ref={fileRef} type="file" className="hidden"
+              <input ref={fileRef} type="file" className="hidden" accept=".csv,.parquet,.xlsx,.xls,.json,.npz"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) attach(f); e.target.value = ""; }} />
-              <button onClick={() => fileRef.current?.click()} disabled={running}
-                className="btn-outline px-2.5 py-2 text-[13px] disabled:opacity-40" title="Attach a file">+</button>
+              <div className="flex flex-col gap-1">
+                <button onClick={() => fileRef.current?.click()} disabled={running}
+                  className="btn-outline px-2 py-1.5 text-[11px] disabled:opacity-40 whitespace-nowrap"
+                  title="Upload a dataset (CSV, Parquet, Excel, JSON, NPZ)">+ upload data</button>
+                <label className="flex items-center gap-1 text-[9px] text-faint cursor-pointer">
+                  <input type="checkbox" checked={replaceDefault} onChange={(e) => setReplaceDefault(e.target.checked)}
+                    className="accent-[#fafafa]" />
+                  replace default dataset
+                </label>
+              </div>
               <textarea ref={inputRef} value={input} rows={1} spellCheck={false}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                 placeholder={running ? "Team is working…" : "Ask AlphaSeek to research, edit, or explain…"}
                 disabled={running}
                 className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-[12.5px] outline-none focus:border-border2 resize-none disabled:opacity-50" />
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-1 text-[9.5px] text-faint">
-                  <span>rounds</span>
-                  <input type="number" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)}
-                    className="w-9 bg-surface border border-border rounded px-1 py-0.5 text-[10.5px] tnum" />
+              <div className="flex flex-col items-end gap-1.5">
+                <div className="flex items-center gap-2 bg-surface border border-border rounded-md px-2.5 py-1.5">
+                  <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
+                    <span className={`${researchMode === "factor" ? "text-text" : "text-faint"}`}>Factor</span>
+                    <div className="relative w-7 h-3.5">
+                      <input type="checkbox" checked={researchMode === "general"}
+                        onChange={(e) => setResearchMode(e.target.checked ? "general" : "factor")}
+                        className="sr-only" />
+                      <div className={`absolute inset-0 rounded-full transition-colors ${researchMode === "general" ? "bg-[#fafafa]" : "bg-border"}`} />
+                      <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full bg-surface transition-transform ${researchMode === "general" ? "translate-x-3.5" : ""}`} />
+                    </div>
+                    <span className={`${researchMode === "general" ? "text-text" : "text-faint"}`}>General</span>
+                  </label>
+                  <div className="w-px h-4 bg-border" />
+                  <div className="flex items-center gap-1 text-[11px]">
+                    <span className="text-faint">rounds</span>
+                    <input type="number" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)}
+                      className="w-8 bg-transparent border border-border rounded px-1 py-0.5 text-[11px] tnum text-text text-center outline-none focus:border-border2" />
+                  </div>
                 </div>
                 <button onClick={() => send()} disabled={running || !input.trim()} className="btn px-3.5 py-1.5 text-[12px]">
                   {running ? "…" : "Send"}
@@ -366,7 +433,7 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
       </div>
     );
   if (ev.type === "start")
-    return <Rule>{ev.resumed ? "continuing" : "started"} · {ev.iterations} rounds · {ev.engine} · {ev.dataset?.source === "real" ? `${ev.dataset.stocks} real stocks` : "dataset"}</Rule>;
+    return <Rule>{ev.resumed ? "continuing" : "started"} · {ev.research_mode ?? "factor"} · {ev.iterations} rounds · {ev.engine} · {ev.dataset?.source === "real" ? `${ev.dataset.stocks} real stocks` : "dataset"}</Rule>;
   if (ev.type === "round") return <Rule>round {ev.step} / {ev.total}</Rule>;
   if (ev.type === "handoff")
     return <div className="text-[11.5px] text-muted animate-in flex items-center gap-1.5"><span className="dot on" /><span className="text-text/80">{ev.agent}</span> {ev.action}</div>;
@@ -461,6 +528,35 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
         </div>
       </button>
     );
+  if (ev.type === "export")
+    return (
+      <div className="animate-in card p-2.5 w-full text-left">
+        <div className="filecard-head">
+          <span className="text-faint">export</span>
+          <span className="text-text/90">{ev.lang === "pine" ? "TradingView · Pine Script" : "MetaTrader · MQL5"}</span>
+          <span className="text-faint ml-auto">{(ev.code?.split("\n").length) ?? 0} lines</span>
+        </div>
+        {ev.lang === "pine" && (
+          <span className="text-[10px] text-[#8b949e] mt-1 mb-1.5 block">
+            Open TradingView → Charts → Pine Editor tab (bottom) → New → paste → Add to Chart
+          </span>
+        )}
+        {ev.lang === "mql5" && (
+          <div className="text-[10px] text-[#8b949e] mt-1 mb-1.5">
+            Paste into MetaEditor (MetaTrader → Tools → MetaQuotes Language Editor → New → Expert Advisor → paste → Compile → Attach to Chart)
+          </div>
+        )}
+        {ev.code && <CodeBlock code={ev.code} lang={ev.lang} className="text-[11px] mt-1.5 max-h-40 overflow-auto p-2" />}
+        <div className="flex gap-2 mt-1.5">
+          <button onClick={() => onOpen({ kind: "artifact", id: ev.filename })}
+            className="text-[10px] text-[#58a6ff] hover:underline">view chart</button>
+          <button onClick={() => navigator.clipboard.writeText(ev.code)}
+            className="text-[10px] text-[#58a6ff] hover:underline">copy</button>
+          <a href={`${API}/api/artifacts/${ev.filename}`} target="_blank" rel="noreferrer"
+            className="text-[10px] text-[#58a6ff] hover:underline">download {ev.filename}</a>
+        </div>
+      </div>
+    );
   if (ev.type === "run_error")
     return <div className="text-[11.5px] text-muted animate-in card p-2.5 border-border2 whitespace-pre-wrap">run failed · {ev.message}</div>;
   if (ev.type === "backtest") {
@@ -493,7 +589,7 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
             ))}
           </div>
         )}
-        {graded && <div className="mt-2 -mx-1"><EquityChart data={r.equity_curve} height={64} /></div>}
+        {graded && <div className="mt-2 -mx-1"><TVChart data={r.equity_curve} height={80} /></div>}
       </div>
     );
   }
@@ -513,7 +609,7 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
   }
   if (ev.type === "memory")
     return <div className="text-[10.5px] text-faint animate-in">memory · {ev.kept ? "kept" : "discarded"} · {ev.keepers} keepers</div>;
-  if (ev.type === "upload") return <Rule>attached {ev.filename}</Rule>;
+  if (ev.type === "upload") return <Rule>attached {ev.filename}{ev.replaced_default ? " · replaces default dataset" : ""}</Rule>;
   if (ev.type === "done")
     return (
       <div className="animate-in card p-3 border-border2">

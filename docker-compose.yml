@@ -36,6 +36,36 @@ services:
     ports: ["6333:6333"]
     volumes: ["qdrant-data:/qdrant/storage"]
 
+  # Kafka-compatible event streaming (log-based persistence, replay, consumer groups).
+  # Drop-in for Redis pub/sub — same API as Kafka, single binary, no JVM.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      - --pandaproxy-addr=PLAINTEXT://0.0.0.0:8082
+      - --advertise-pandaproxy-addr=PLAINTEXT://localhost:8082
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=localhost:33145
+    ports:
+      - "9092:9092"   # Kafka API
+      - "8082:8082"   # HTTP proxy
+      - "9644:9644"   # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # LLM gateway: one OpenAI-compatible endpoint with routing/failover/cost tracking.
   # Point the app at it via LLM_BASE_URL=http://localhost:4000.
   litellm:
@@ -51,3 +81,4 @@ volumes:
   redis-data:
   pg-data:
   qdrant-data:
+  redpanda-data:

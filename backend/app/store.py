@@ -1,16 +1,11 @@
-"""Persistence facade — Postgres when DATABASE_URL is set, else SQLite.
+"""Persistence facade — Postgres only. DATABASE_URL is required.
 
-The rest of the app imports from here, so switching backends is one env var
-(DATABASE_URL) with no code changes.
+SQLite has been removed. Set DATABASE_URL=postgres://... in backend/.env.
 """
+
 from __future__ import annotations
 
-from app.settings import settings
-
-if settings.use_postgres:
-    from app import pg as _b
-else:
-    from app import db as _b
+from app import pg as _b
 
 init_db = _b.init_db
 close_stale_runs = _b.close_stale_runs

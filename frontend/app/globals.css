@@ -41,7 +41,7 @@ body {
 /* code block */
 .code {
   font-family: "Geist Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.6;
-  background: #0d0d0e; border: 1px solid #262628; border-radius: 6px;
+  background: #0a0a0a; border: 1px solid #262628; border-radius: 6px;
   color: #cfcfd4; white-space: pre; overflow-x: auto;
 }
 .code .kw { color: #fafafa; font-weight: 500; }
@@ -74,6 +74,13 @@ body {
 ::-webkit-scrollbar-thumb { background: #262628; border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: #38383c; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* CodeMirror — override oneDark theme bg to true black */
+.cm-editor { background: #0a0a0a !important; }
+.cm-editor .cm-scroller { background: #0a0a0a !important; }
+.cm-editor .cm-gutters { background: #0a0a0a !important; border-right: 1px solid #1c1c1e !important; }
+.cm-editor .cm-activeLineGutter { background: #161617 !important; }
+.cm-editor .cm-activeLine { background: #161617 !important; }
 
 @media (prefers-reduced-motion: reduce) {
   *, ::after, ::before { animation: none !important; transition: none !important; }

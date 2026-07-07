@@ -6,9 +6,13 @@ Both engines execute the SAME `sandbox/runner.py` contract (script imports
   * docker     — hardened container: no network, read-only fs, non-root,
                  memory/CPU caps. /in (code, ro) and /out (artifacts, rw) mounts.
   * inprocess  — dev fallback: the same runner via the local Python.
+                 Requires ALLOW_INPROCESS=1 environment variable. NEVER runs
+                 in-process without explicit opt-in (security: agent code
+                 executes with full host access when Docker is unavailable).
 
 Artifacts (PNGs etc.) are copied to backend/artifacts/ and served by the API.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,12 +25,17 @@ import uuid
 from pathlib import Path
 
 from app.quant.backtest import FactorError
+from app.settings import settings
 
 IMAGE = "alphaseek-sandbox:latest"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNNER = REPO_ROOT / "sandbox" / "runner.py"
 ARTIFACT_STORE = Path(__file__).resolve().parents[2] / "artifacts"
 ARTIFACT_STORE.mkdir(exist_ok=True)
+
+_DOCKER_MEM = settings.docker_memory
+_DOCKER_CPUS = settings.docker_cpus
+_SANDBOX_TIMEOUT = settings.sandbox_timeout
 
 
 class SandboxUnavailable(Exception):
@@ -46,8 +55,12 @@ def docker_available() -> bool:
         _docker_ok = False
         return False
     try:
-        p = subprocess.run(["docker", "version", "--format", "{{.Server.Os}}"],
-                           capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Os}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         _docker_ok = p.returncode == 0 and bool(p.stdout.strip())
     except Exception:  # noqa: BLE001
         _docker_ok = False
@@ -57,9 +70,13 @@ def docker_available() -> bool:
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
-def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
-                    uploads_dir: Path | None = None, image: str = IMAGE,
-                    manifest_src: Path | None = None) -> dict:
+def run_factor_code(
+    code: str,
+    timeout: int | None = None,
+    uploads_dir: Path | None = None,
+    image: str = IMAGE,
+    manifest_src: Path | None = None,
+) -> dict:
     """Execute an agent research script; return metrics + stdout + artifacts.
 
     `image` selects a provisioned sandbox image (base or a dep-layered one).
@@ -67,7 +84,11 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
     a visualization script can load it via alphaseek.manifest() without recomputing.
     """
     global _docker_ok
+    import logging
     import time as _time
+
+    log = logging.getLogger(__name__)
+    timeout = timeout or _SANDBOX_TIMEOUT
     t0 = _time.time()
     tmp = Path(tempfile.mkdtemp(prefix="alphaseek_"))
     out = tmp / "out"
@@ -82,20 +103,18 @@ def run_factor_code(code: str, seed_num: int = 7, timeout: int = 120,
                 result["engine"] = "docker"
             except SandboxUnavailable:
                 _docker_ok = None
-                result = _exec_local(tmp, out, timeout, uploads_dir)
-                result["engine"] = "inprocess"
+                result = _fallback_local(tmp, out, timeout, uploads_dir)
         else:
-            result = _exec_local(tmp, out, timeout, uploads_dir)
-            result["engine"] = "inprocess"
+            result = _fallback_local(tmp, out, timeout, uploads_dir)
 
         if not result.get("ok"):
             err = result.get("error", "unknown error")
             tail = (result.get("stdout") or "")[-500:]
             raise FactorError(f"{err}\n--- script output ---\n{tail}" if tail else err)
-        result.setdefault("submitted", True)
 
         # persist artifacts with unique names the API can serve (local + S3 if set)
         from app import storage
+
         stored = []
         for fn in result.get("artifacts", []):
             src = out / fn
@@ -126,18 +145,51 @@ def _parse(p: subprocess.CompletedProcess) -> dict:
     raise SandboxUnavailable(f"runner produced no JSON. stderr: {p.stderr[:300]}")
 
 
-def _exec_docker(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None,
-                 image: str = IMAGE) -> dict:
+def _sess_npz(uploads_dir: Path | None) -> Path | None:
+    """Return the path to a session-specific market.npz, if one exists."""
+    if uploads_dir is not None:
+        candidate = Path(uploads_dir) / "market.npz"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _exec_docker(
+    tmp: Path, out: Path, timeout: int, uploads_dir: Path | None, image: str = IMAGE
+) -> dict:
     cmd = [
-        "docker", "run", "--rm",
-        "--network", "none",
-        "--memory", "2g", "--cpus", "2", "--pids-limit", "256",
-        "--read-only", "--tmpfs", "/tmp",
-        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--memory",
+        _DOCKER_MEM,
+        "--cpus",
+        _DOCKER_CPUS,
+        "--pids-limit",
+        "256",
+        "--read-only",
+        "--tmpfs",
+        "/tmp",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
         # runner + market data are MOUNTED, so code/data updates need no rebuild
-        "-v", f"{RUNNER}:/app/runner.py:ro",
-        "-v", f"{DATA_DIR}:/data:ro",
-        "-v", f"{tmp}:/in:ro", "-v", f"{out}:/out",
+        "-v",
+        f"{RUNNER}:/app/runner.py:ro",
+    ]
+    sess_npz = _sess_npz(uploads_dir)
+    if sess_npz:
+        cmd += ["-v", f"{sess_npz}:/data/market.npz:ro"]
+    else:
+        cmd += ["-v", f"{DATA_DIR}:/data:ro"]
+    cmd += [
+        "-v",
+        f"{tmp}:/in:ro",
+        "-v",
+        f"{out}:/out",
     ]
     if uploads_dir and uploads_dir.is_dir():
         cmd += ["-v", f"{uploads_dir}:/uploads:ro"]
@@ -150,15 +202,45 @@ def _exec_docker(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None,
 
 
 def _exec_local(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None) -> dict:
-    env = dict(os.environ, ARTIFACTS_DIR=str(out), MPLBACKEND="Agg",
-               MPLCONFIGDIR=str(tmp / "mpl"), DATA_PATH=str(DATA_DIR / "market.npz"),
-               UPLOADS_DIR=str(uploads_dir or ""),
-               MANIFEST_PATH=str(tmp / "manifest.npz"))
+    data_path = str(_sess_npz(uploads_dir) or DATA_DIR / "market.npz")
+    env = dict(
+        os.environ,
+        ARTIFACTS_DIR=str(out),
+        MPLBACKEND="Agg",
+        MPLCONFIGDIR=str(tmp / "mpl"),
+        DATA_PATH=data_path,
+        UPLOADS_DIR=str(uploads_dir or ""),
+        MANIFEST_PATH=str(tmp / "manifest.npz"),
+    )
     try:
         p = subprocess.run(
             [sys.executable, str(RUNNER), str(tmp / "research.py")],
-            capture_output=True, text=True, timeout=timeout, env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired as e:
         raise FactorError("script timed out (possible infinite loop)") from e
     return _parse(p)
+
+
+def _fallback_local(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None) -> dict:
+    """Run in-process only if ALLOW_INPROCESS is explicitly set. Refuses otherwise."""
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    if not os.getenv("ALLOW_INPROCESS", "").strip().lower() in ("1", "true", "yes"):
+        raise SandboxUnavailable(
+            "Docker unavailable and ALLOW_INPROCESS is not set. "
+            "Set ALLOW_INPROCESS=1 to enable local execution (insecure — "
+            "agent code runs with full host access)."
+        )
+    log.warning(
+        "Running agent code in-process (ALLOW_INPROCESS=1) — no sandbox "
+        "isolation. This is insecure and should only be used in development."
+    )
+    result = _exec_local(tmp, out, timeout, uploads_dir)
+    result["engine"] = "inprocess"
+    return result

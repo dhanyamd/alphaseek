@@ -3,6 +3,7 @@
 Enable S3 by setting ARTIFACT_S3_BUCKET (see settings.py). The local copy is
 always kept so the API can serve artifacts even without S3.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -21,12 +22,12 @@ def _s3():
     if _s3_client is None:
         import boto3
 
-        _s3_client = boto3.client("s3", region_name=settings.s3_region)
+        _s3_client = boto3.client("s3", region_name=settings.aws_region)
     return _s3_client
 
 
 def _key(name: str) -> str:
-    return f"{settings.s3_prefix}/{name}"
+    return f"{settings.artifact_s3_prefix}/{name}"
 
 
 def put(src: Path, name: str) -> str:
@@ -37,7 +38,7 @@ def put(src: Path, name: str) -> str:
         shutil.copy(src, dest)
     if settings.use_s3:
         try:
-            _s3().upload_file(str(dest), settings.s3_bucket, _key(name))
+            _s3().upload_file(str(dest), settings.artifact_s3_bucket, _key(name))
         except Exception:  # noqa: BLE001 — never fail a run on artifact upload
             pass
     return name
@@ -49,12 +50,24 @@ def url(name: str) -> str | None:
         try:
             return _s3().generate_presigned_url(
                 "get_object",
-                Params={"Bucket": settings.s3_bucket, "Key": _key(name)},
+                Params={"Bucket": settings.artifact_s3_bucket, "Key": _key(name)},
                 ExpiresIn=3600,
             )
         except Exception:  # noqa: BLE001
             return None
     return None
+
+
+def put_text(text: str, name: str) -> str:
+    """Save text content as an artifact (local + S3 when configured)."""
+    dest = LOCAL_DIR / name
+    dest.write_text(text)
+    if settings.use_s3:
+        try:
+            _s3().upload_file(str(dest), settings.artifact_s3_bucket, _key(name))
+        except Exception:  # noqa: BLE001
+            pass
+    return name
 
 
 def local_path(name: str) -> Path:

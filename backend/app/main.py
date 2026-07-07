@@ -7,6 +7,7 @@ Endpoints:
     GET  /api/sessions/{id}         -> a session + its full event log (replay)
     GET  /api/sessions/{id}/stream  -> SSE: run the loop, stream + persist events
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,11 +16,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app import bus, storage
-from app import store as db          # SQLite or Postgres, chosen by DATABASE_URL
+from app import store as db  # Postgres persistence
 from app.agent.llm import get_llm
 from app.agent.orchestrator import research
 from app.quant.dataset import dataset_meta, dataset_status, ensure_dataset_async
@@ -30,8 +31,8 @@ UPLOAD_ROOT.mkdir(exist_ok=True)
 
 load_dotenv()
 db.init_db()
-db.close_stale_runs()    # a restart orphans daemon workers — close out stale runs
-ensure_dataset_async()   # build the real market cache if missing
+db.close_stale_runs()  # a restart orphans daemon workers — close out stale runs
+ensure_dataset_async()  # build the real market cache if missing
 
 _RUNNING: set[int] = set()
 
@@ -39,7 +40,8 @@ app = FastAPI(title="AlphaSeek", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_methods=["*"], allow_headers=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -51,25 +53,58 @@ class SessionIn(BaseModel):
     user: str
     seed: str
     iterations: int = 8
+    mode: str
+
+    @field_validator("mode")
+    @classmethod
+    def mode_valid(cls, v: str) -> str:
+        if v not in ("factor", "general"):
+            raise ValueError("mode must be 'factor' or 'general'")
+        return v
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "llm_mode": get_llm().mode, "model": get_llm().model,
-            "dataset": {**dataset_status(), **dataset_meta()}}
+    return {
+        "ok": True,
+        "llm_mode": get_llm().mode,
+        "model": get_llm().model,
+        "dataset": {**dataset_status(), **dataset_meta()},
+    }
 
 
 @app.post("/api/sessions/{session_id}/upload")
-async def upload(session_id: int, file: UploadFile):
-    """Attach a file (trade log CSV, etc.) to a session — visible to the agents."""
+async def upload(session_id: int, file: UploadFile, replace_default: bool = False):
+    """Attach a file (CSV, Parquet, Excel, JSON, NPZ) to a session.
+
+    With ``replace_default=true`` the file is converted to ``market.npz``
+    and mounted at ``/data/market.npz`` in the sandbox, replacing the default
+    yfinance dataset.  The agent uses ``np.load(af.DATA)`` as usual.
+    """
     sdir = UPLOAD_ROOT / str(session_id)
     sdir.mkdir(exist_ok=True)
     safe = Path(file.filename or "upload.csv").name
     dest = sdir / safe
     dest.write_bytes(await file.read())
-    db.append_event(session_id, {"type": "upload", "filename": safe})
-    return {"ok": True, "filename": safe,
-            "files": sorted(p.name for p in sdir.iterdir())}
+
+    replaced = False
+    if replace_default:
+        from app.quant.convert import upload_to_npz
+
+        npz_dst = sdir / "market.npz"
+        try:
+            meta = upload_to_npz(dest, npz_dst)
+            replaced = True
+        except Exception as e:
+            return {"ok": False, "error": f"conversion failed: {e}", "filename": safe}
+
+    db.append_event(session_id, {"type": "upload", "filename": safe, "replaced_default": replaced})
+    return {
+        "ok": True,
+        "filename": safe,
+        "files": sorted(p.name for p in sdir.iterdir()),
+        "replaced_default": replaced,
+    }
 
 
 class RunIn(BaseModel):
@@ -84,13 +119,21 @@ def manual_run(session_id: int, body: RunIn) -> dict:
     from app.quant.docker_sandbox import run_factor_code
 
     sdir = UPLOAD_ROOT / str(session_id)
-    db.append_event(session_id, {"type": "code", "agent": "You", "step": 0,
-                                 "filename": body.filename, "code": body.code})
+    db.append_event(
+        session_id,
+        {"type": "code", "agent": "You", "step": 0, "filename": body.filename, "code": body.code},
+    )
     try:
         bt = run_factor_code(body.code, uploads_dir=sdir if sdir.is_dir() else None)
-        ev = {"type": "backtest", "agent": "Backtester", "step": 0,
-              "name": body.filename, "result": bt,
-              "engine": bt.get("engine", ""), "exploration": not bt.get("submitted")}
+        ev = {
+            "type": "backtest",
+            "agent": "Backtester",
+            "step": 0,
+            "name": body.filename,
+            "result": bt,
+            "engine": bt.get("engine", ""),
+            "exploration": not bt.get("submitted"),
+        }
         db.append_event(session_id, ev)
         return ev
     except FactorError as e:
@@ -105,7 +148,7 @@ def artifact(name: str):
     else serves the local copy."""
     from fastapi.responses import FileResponse, RedirectResponse
 
-    safe = Path(name).name                      # no path traversal
+    safe = Path(name).name  # no path traversal
     s3_url = storage.url(safe)
     if s3_url:
         return RedirectResponse(s3_url)
@@ -128,7 +171,7 @@ def sessions(user: str) -> dict:
 
 @app.post("/api/sessions")
 def new_session(body: SessionIn) -> dict:
-    sid = db.create_session(body.user.strip(), body.seed.strip(), body.iterations)
+    sid = db.create_session(body.user.strip(), body.seed.strip(), body.iterations, body.mode)
     return {"id": sid}
 
 
@@ -141,18 +184,9 @@ def session_detail(session_id: int) -> dict:
 def _rebuild_memory(events: list[dict]):
     """Reconstruct the Archivist's memory from a session's stored events so a
     follow-up prompt continues where the last run left off."""
-    from app.agent.memory import Memory
+    from app.agent.memory import rebuild_memory
 
-    mem = Memory()
-    pending: dict = {}
-    for ev in events:
-        if ev.get("type") == "backtest":
-            pending[ev.get("name")] = ev.get("result", {})
-        elif ev.get("type") == "verdict" and ev.get("name") in pending:
-            bt = pending.pop(ev["name"])
-            if "sharpe" in bt and "mean_ic" in bt:
-                mem.add(ev["name"], bt.get("expr", ev["name"]), bt, ev.get("verdict", {}))
-    return mem
+    return rebuild_memory(events)
 
 
 @app.get("/api/sessions/{session_id}/stream")
@@ -165,19 +199,22 @@ async def stream(session_id: int, prompt: str | None = None):
     """
     s = db.get_session(session_id)
     if not s:
+
         async def err():
             yield {"event": "error", "data": '{"message":"session not found"}'}
+
         return EventSourceResponse(err())
 
     goal = (prompt or "").strip() or s["seed"]
     mem = _rebuild_memory(s["events"]) if s["events"] else None
 
+    import asyncio
     import json
     import threading
 
     # Execution is DECOUPLED from the stream: the worker persists every event to
     # the DB itself, so a browser refresh/disconnect never kills or loses a run.
-    # The SSE generator simply tails the DB.
+    # The SSE generator tails Redis pub/sub for live events with DB fallback.
     start_after = db.max_event_id(session_id)
     if prompt:
         db.append_event(session_id, {"type": "user", "text": goal})
@@ -188,16 +225,22 @@ async def stream(session_id: int, prompt: str | None = None):
     def worker() -> None:
         best = None
         try:
-            for event in research(goal, iterations=s["iterations"], mem=mem,
-                                  uploads_dir=sdir if upload_names else None,
-                                  uploads=[f"/uploads/{n}" for n in upload_names]):
+            for event in research(
+                goal,
+                mode=s.get("mode", "factor"),
+                iterations=s["iterations"],
+                mem=mem,
+                uploads_dir=sdir if upload_names else None,
+                uploads=[f"/uploads/{n}" for n in upload_names],
+            ):
                 db.append_event(session_id, event)
-                bus.publish(session_id, event)      # live fan-out (best-effort)
+                bus.publish(session_id, event)  # live fan-out (best-effort)
                 if event["type"] == "done":
                     best = event.get("best")
         except Exception as e:  # noqa: BLE001 — surface crashes to the UI
-            db.append_event(session_id, {"type": "error", "fatal": True,
-                                         "message": f"{type(e).__name__}: {e}"})
+            db.append_event(
+                session_id, {"type": "error", "fatal": True, "message": f"{type(e).__name__}: {e}"}
+            )
         finally:
             db.set_status(session_id, "done", best)
             _RUNNING.discard(session_id)
@@ -209,12 +252,44 @@ async def stream(session_id: int, prompt: str | None = None):
 
     async def gen():
         last = start_after
-        while True:
+        done = False
+        # Replay stored events first (catch up)
+        rows = await asyncio.to_thread(db.events_after, session_id, last)
+        for eid, ev in rows:
+            last = eid
+            yield {"data": json.dumps(ev)}
+        # Subscribe to Redis pub/sub for live events (instant, no polling)
+        try:
+            q: asyncio.Queue = asyncio.Queue()
+
+            def _listen():
+                for ev in bus.subscribe(session_id):
+                    q.put_nowait(ev)
+                    if ev.get("type") in ("done", "close"):
+                        break
+
+            sub = asyncio.create_task(asyncio.to_thread(_listen))
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    break  # Redis timed out — fall through to DB-polling
+                yield {"data": json.dumps(ev)}
+                if ev.get("type") in ("done", "close"):
+                    done = True
+                    break
+        except Exception:
+            pass  # Redis unavailable — fall through to DB-polling
+        # DB-polling fallback (if Redis didn't deliver a terminal event)
+        while not done:
             rows = await asyncio.to_thread(db.events_after, session_id, last)
             for eid, ev in rows:
                 last = eid
                 yield {"data": json.dumps(ev)}
-            if not rows:
+                if ev.get("type") in ("done", "close"):
+                    done = True
+                    break
+            if not done:
                 if session_id not in _RUNNING:
                     break
                 await asyncio.sleep(0.3)
@@ -230,16 +305,16 @@ async def stream_ws(websocket: WebSocket, session_id: int):
     await websocket.accept()
     last = 0
     try:
-        for eid, ev in db.events_after(session_id, 0):   # replay history
+        for eid, ev in db.events_after(session_id, 0):  # replay history
             last = eid
             await websocket.send_json(ev)
         if settings.use_redis_bus:
-            for ev in bus.subscribe(session_id):         # live via Redis pub/sub
+            for ev in bus.subscribe(session_id):  # live via Redis pub/sub
                 await websocket.send_json(ev)
                 if ev.get("type") in ("done", "close"):
                     break
         else:
-            while True:                                  # live via DB tail
+            while True:  # live via DB tail
                 rows = await asyncio.to_thread(db.events_after, session_id, last)
                 for eid, ev in rows:
                     last = eid
