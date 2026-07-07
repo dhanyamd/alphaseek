@@ -32,3 +32,4 @@ build/
 *.log
 .vscode/
 .idea/
+demo/*.mp4
