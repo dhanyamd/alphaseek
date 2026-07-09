@@ -10,28 +10,31 @@ AlphaSeek is an LLM-driven quantitative research platform. A multi-agent team ex
 
 ```
 User prompt
-  │
-  ▼
-┌──────────────────────────────────────────────────────────────┐
-│ 0. DATA PROFILER   Backend reads raw file (NPZ/CSV/...),    │
-│                    LLM interprets metadata → DataReport      │
-├──────────────────────────────────────────────────────────────┤
-│ 1. LITERATURE      Researcher plans queries → OpenAlex       │
-│                    search → arXiv full-text → PaperBriefs    │
-├──────────────────────────────────────────────────────────────┤
-│ 2. SYNTHESIST      ExperimentPlan from DataReport + briefs   │
-│                    (Pydantic schema auto-injected in prompt)  │
-├──────────────────────────────────────────────────────────────┤
-│ 3. CODER           ONE Python script per round, runs in      │
-│                    sandbox, calls af.submit(signal, fwd_arr)  │
-├──────────────────────────────────────────────────────────────┤
-│ 4. VISUALIZER      Plotly charts from manifest.npz arrays    │
-├──────────────────────────────────────────────────────────────┤
-│ 5. REPORTER        Answers the user's question in plain text │
-└──────────────────────────────────────────────────────────────┘
+  |
+  v
++------------------------------------------------------------------+
+| 0. DATA PROFILER   Backend reads raw file (NPZ/CSV/PARQUET/...), |
+|                    LLM interprets metadata -> DataReport          |
++------------------------------------------------------------------+
+| 1. LITERATURE      Researcher plans queries -> OpenAlex          |
+|                    search -> arXiv full-text -> PaperBriefs       |
++------------------------------------------------------------------+
+| 2. SYNTHESIST      ExperimentPlan from DataReport + briefs       |
+|                    (Pydantic schema auto-injected in prompt)      |
++------------------------------------------------------------------+
+| 3. CODER           ONE Python script per round, runs in          |
+|                    sandbox, prints JSON results to stdout,        |
+|                    saves arrays to af.OUT/*.npz                   |
++------------------------------------------------------------------+
+| 4. VISUALIZER      Plotly charts from whatever .npz keys exist   |
++------------------------------------------------------------------+
+| 5. EXPORTER        Pine Script / MQL5 (only if prompt asks)      |
++------------------------------------------------------------------+
+| 6. REPORTER        Answers the user's question in plain text     |
++------------------------------------------------------------------+
 ```
 
-Stages 0 and 1 run once per session. Stages 2-4 repeat for N rounds (configurable, default 8). Stage 5 runs once at the end.
+Stages 0-1 run once. Stages 2-4 repeat for N rounds (configurable, default 8). Stages 5-6 run once at the end.
 
 ---
 
@@ -39,49 +42,49 @@ Stages 0 and 1 run once per session. Stages 2-4 repeat for N rounds (configurabl
 
 ```
 alphaseek/
-├── backend/
-│   ├── app/
-│   │   ├── agent/
-│   │   │   ├── agents.py         # 5 agent classes (Profiler→Reporter)
-│   │   │   ├── llm.py            # LLM client (OpenAI + Anthropic, multi-provider failover)
-│   │   │   ├── memory.py         # Experiment memory (flat list, no metric assumptions)
-│   │   │   ├── orchestrator.py   # Research loop, yields SSE events
-│   │   │   ├── reader.py         # Paper reading (PDF full-text → structured brief)
-│   │   │   ├── research_tools.py # OpenAlex + arXiv search, PDF fetching
-│   │   │   ├── evaluate.py       # unused (legacy)
-│   │   │   └── rag.py            # unused (legacy)
-│   │   ├── quant/
-│   │   │   ├── dataset.py        # Dataset builder (yfinance/Polygon, env-configurable)
-│   │   │   ├── docker_sandbox.py # Docker/fallback execution, artifact collection
-│   │   │   ├── schemas.py        # DataReport + ExperimentPlan (Pydantic)
-│   │   │   ├── provision.py      # Agent-declared pip packages → cached Docker layers
-│   │   │   ├── convert.py        # No-op: raw uploads pass through, coder handles conversion
-│   │   │   └── backtest.py       # FactorError only
-│   │   ├── main.py               # FastAPI app: sessions, uploads, SSE stream, manual run
-│   │   ├── pg.py                 # Postgres persistence
-│   │   ├── store.py              # Facade → pg.py
-│   │   ├── bus.py                # Event bus (Redis pub/sub + optional Redpanda)
-│   │   ├── storage.py            # Artifact store (local disk + optional S3)
-│   │   └── settings.py           # All env vars, single source of truth
-│   └── data/                     # Cached dataset (market.npz, built by dataset.py)
-│
-├── frontend/
-│   ├── app/
-│   │   ├── page.tsx              # Main workspace: sessions, editor, artifact viewer, event feed
-│   │   └── layout.tsx            # Root layout
-│   ├── components/
-│   │   ├── CodeBlock.tsx         # Syntax-highlighted code display
-│   │   ├── EquityChart.tsx       # Mini equity curve sparkline
-│   │   ├── StrategyViewer.tsx    # Pine/MQL5 strategy display
-│   │   └── TVChart.tsx           # TradingView-like chart widget
-│   └── lib/
-│       └── api.ts                # API client (REST + SSE)
-│
-├── sandbox/
-│   ├── runner.py                 # In-container runner: alphaseek.* API, grading, artifact capture
-│   └── Dockerfile                # Sandbox image (quant stack, no network at runtime)
-│
-└── architecture.md               # This file
++-- backend/
+|   +-- app/
+|   |   +-- agent/
+|   |   |   +-- agents.py         # 7 agent classes (Profiler->Reporter)
+|   |   |   +-- llm.py            # LLM client (OpenAI + Anthropic, multi-provider failover)
+|   |   |   +-- memory.py         # Experiment memory (flat list, no metric assumptions)
+|   |   |   +-- orchestrator.py   # Research loop, yields SSE events
+|   |   |   +-- reader.py         # Paper reading (PDF full-text -> structured brief)
+|   |   |   +-- research_tools.py # OpenAlex + arXiv search, PDF fetching
+|   |   |   +-- evaluate.py       # unused (legacy)
+|   |   |   +-- rag.py            # unused (legacy)
+|   |   +-- quant/
+|   |   |   +-- dataset.py        # Dataset builder (yfinance/Polygon, env-configurable)
+|   |   |   +-- docker_sandbox.py # Docker/fallback execution, artifact collection
+|   |   |   +-- schemas.py        # DataReport + ExperimentPlan (Pydantic)
+|   |   |   +-- provision.py      # Agent-declared pip packages -> cached Docker layers
+|   |   |   +-- convert.py        # No-op: raw uploads pass through, coder handles conversion
+|   |   |   +-- backtest.py       # FactorError only
+|   |   +-- main.py               # FastAPI app: sessions, uploads, SSE stream, manual run
+|   |   +-- pg.py                 # Postgres persistence
+|   |   +-- store.py              # Facade -> pg.py
+|   |   +-- bus.py                # Event bus (Redis pub/sub + optional Redpanda)
+|   |   +-- storage.py            # Artifact store (local disk + optional S3)
+|   |   +-- settings.py           # All env vars, single source of truth
+|   +-- data/                     # Cached dataset (market.npz, built by dataset.py)
+|
++-- frontend/
+|   +-- app/
+|   |   +-- page.tsx              # Main workspace: sessions, editor, artifact viewer, event feed
+|   |   +-- layout.tsx            # Root layout
+|   +-- components/
+|   |   +-- CodeBlock.tsx         # Syntax-highlighted code display
+|   |   +-- EquityChart.tsx       # Mini equity curve sparkline
+|   |   +-- StrategyViewer.tsx    # Pine/MQL5 strategy display
+|   |   +-- TVChart.tsx           # TradingView-like chart widget
+|   +-- lib/
+|       +-- api.ts                # API client (REST + SSE)
+|
++-- sandbox/
+|   +-- runner.py                 # Thin executor: af.DATA / af.OUT / af.uploads(), captures stdout
+|   +-- Dockerfile                # Sandbox image (quant stack, no network at runtime)
+|
++-- architecture.md               # This file
 ```
 
 ---
@@ -93,36 +96,39 @@ alphaseek/
 No hidden grading, no RiskCritic, no hardcoded schema. The LLM:
 - **Profiles** the data (decides what each column means)
 - **Synthesizes** the experiment plan (chooses methodology and evaluation)
-- **Writes** all Python code (the sandbox only provides `af.submit()`)
+- **Writes** all Python code (the sandbox provides no metric helpers)
 - **Renders** charts (writes Plotly code)
+- **Exports** strategies (Pine Script / MQL5 when asked)
 - **Answers** the user (writes a summary)
 
 ### 2. The Sandbox Contract
 
-The in-container runner (`sandbox/runner.py`) exposes a minimal API:
+The in-container runner (`sandbox/runner.py`) is intentionally thin. It provides:
 
 ```python
 import alphaseek as af
 
-data = np.load(af.DATA)           # raw data — any key names
-signal = ...                        # (T, N) signal
-fwd = ...                           # forward returns from price columns
-m = af.submit(signal, fwd_arr=fwd)  # metrics — fwd_arr REQUIRED, no hidden fallback
-
-np.savez(f"{af.OUT}/manifest.npz", key1=arr1, ...)  # arrays for visualizer
+af.DATA        # path to the dataset file (agent loads + inspects it)
+af.OUT         # directory to save artifacts / arrays (agent picks names)
+af.uploads()   # paths to any user-uploaded files
 ```
 
-- `af.submit()` with `fwd_arr=None` returns an error — no implicit forward returns
-- The agent must compute `fwd` from price columns explicitly
-- Metric names (`sharpe`, `mean_ic`, etc.) are mathematical computations, not LLM judgments
-- The Docker sandbox has no network, runs as non-root, is read-only
+There is **no** `af.submit`, **no** `af.manifest`, **no** metric computation.
+The agent is expected to:
+- load `af.DATA` and inspect keys/columns
+- compute forward returns from whatever price column exists
+- evaluate the strategy however the research question demands
+- save arrays for visualization to `af.OUT` (e.g. `np.savez(f"{af.OUT}/result.npz", ...)`)
+- print a single JSON result line (metrics / conclusions) to stdout
+
+The Docker sandbox runs with `--network none`, as non-root, with a read-only filesystem (except `af.OUT`).
 
 ### 3. Data Discovery at Runtime
 
-- No `px_` prefix, no required keys (`tickers`, `dates`, `fwd`)
-- The dataset builder (`dataset.py`) writes `close`, `volume`, `returns`, `fwd`, `tickers`, `dates` — but any uploaded file with different names works identically
-- The profiler (`orchestrator.py:_profile`) reads raw metadata → sends to LLM → gets `DataReport`
-- The coder prompt includes actual column names from the data report
+- No `px_` prefix, no required keys (`tickers`, `dates`, `fwd`, `close`)
+- The dataset builder (`dataset.py`) writes standard names, but **any uploaded file with different names works identically**
+- The profiler reads raw file metadata -> sends to LLM -> gets `DataReport`
+- The coder prompt includes actual column names from the data report (not placeholders)
 
 ### 4. Multi-Provider LLM
 
@@ -158,7 +164,7 @@ All via environment variables in `backend/.env`:
 | `ALPHASEEK_DATA_SOURCE` | `yfinance` (default) or `polygon` |
 | `POLYGON_API_KEY` | Polygon.io API key |
 | `EXA_API_KEY` | Web search for literature |
-| `ARTIFACT_S3_BUCKET` | S3 bucket for charts/manifests |
+| `ARTIFACT_S3_BUCKET` | S3 bucket for artifacts/charts |
 | `REDIS_URL` | Redis for live event streaming |
 | `DOCKER_MEMORY` / `DOCKER_CPUS` | Sandbox resource limits |
 
@@ -167,11 +173,11 @@ All via environment variables in `backend/.env`:
 ## Data Flow (Docker Execution)
 
 ```
-Agent code        →  /in/research.py (mounted ro)
-Default dataset   →  /data/market.npz (mounted ro, via DATA_PATH env)
-Uploaded file     →  /data/default (mounted ro, via DATA_PATH env)
-Artifacts out     →  /out/ (mounted rw, copied to backend/artifacts/)
-Manifest arrays   →  /out/manifest.npz (for viz stage)
+Agent code        ->  /in/research.py (mounted ro)
+Default dataset   ->  /data/market.npz (mounted ro, via DATA_PATH env)
+Uploaded file     ->  /data/default (mounted ro, via DATA_PATH env)
+Artifacts out     ->  /out/ (mounted rw, copied to backend/artifacts/)
+Arrays for viz    ->  /out/*.npz (agent picks file/key names)
 ```
 
 `DATA_PATH` is set via `-e` in the Docker run command — `/data/market.npz` for the default dataset, `/data/default` for uploads.
@@ -184,9 +190,10 @@ Manifest arrays   →  /out/manifest.npz (for viz stage)
 |---|---|
 | `mode` (factor/general) | LLM reads user prompt and decides; no backend branch needed |
 | `RiskCritic` | LLM judges results directly; no separate critic agent |
-| `px_` prefix / reserved keys | Data keys are whatever the file contains — no prefix assumptions |
-| Hidden `fwd` fallback | Explicit `fwd_arr` required; no silent default |
-| `Exporter` class | Pine Script / MQL5 export was factor-mode-only and orphaned |
+| `px_` prefix / reserved keys | Data keys are whatever the file contains -- no prefix assumptions |
+| `af.submit()` / `af.manifest()` | Runner is thin; LLM computes all metrics itself |
+| `manifest.npz` convention | Visualizer globs `af.OUT/*.npz` dynamically |
+| Hidden `fwd` fallback | No implicit forward returns; agent computes them explicitly |
 | `market.npz` hardcoded path | Configurable via `ALPHASEEK_DATASET_PATH` env var |
 | `_RESERVED` / `_tolerant_load` | No key aliasing; agent discovers actual names at runtime |
-| SQLite | Postgres only (removed db.py, facade → pg.py) |
+| SQLite | Postgres only (removed db.py, facade -> pg.py) |

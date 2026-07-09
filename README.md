@@ -11,38 +11,35 @@ discovers the data schema, picks the evaluation metric, and writes all code.
 ## System architecture
 
 ```
-   Browser ───── prompt ─────► FastAPI ──── SSE stream ────► UI
-      ▲                                     │
-      └─── live events (Redis pub/sub ──────┘
-            or Redpanda durable log)
+   Browser ---- prompt ----> FastAPI ----- SSE stream ----> UI
+      ^                                                     |
+      +--------- live events (Redis pub/sub + Redpanda) ----+
 
-                         │  research pipeline (no mode branching)
-                         ▼
-  ┌──────────────────────────────────────────────────────────────────────┐
-  │  RESEARCH PIPELINE                                                    │
-  │                                                                        │
-  │  DataProfiler ─► Researcher(OpenAlex/arXiv) ─► Synthesist ─┐          │
-  │      │                                    │              │          │
-  │      │                          paper briefs              │          │
-  │      ▼                                            ▼          │          │
-  │  DataReport ─────────────────────────► ExperimentPlan     │          │
-  │                                                 │          │          │
-  │                                         CodingAgent     │          │
-  │                                              │            │          │
-  │                                         run in sandbox ─┤          │
-  │                                              │            │          │
-  │                                         Visualizer ─────┤          │
-  │                                              │            │          │
-  │                                         Memory (best) ──┘          │
-  │                                                        │           │
-  │  Exporter (Pine/MQL5, on request) ◄── best run         │           │
-  │  Reporter ◄── answers the question                     │           │
-  └──────────────────────┬─────────────────────────────────┘           │
-                         │                                              │
-          ┌──────────────┼──────────────┐                              │
-          ▼              ▼              ▼                              │
-    Postgres (log)  S3 / local     (no RAG — papers read              │
-                    disk (charts)  on demand via OpenAlex/arXiv)       │
+
+  +------------------------------------------------------------------+
+  |  RESEARCH PIPELINE (no mode)                                     |
+  |                                                                   |
+  |  DataProfiler -----> Researcher -------> Synthesist -\            |
+  |       |             (OpenAlex/arXiv)        |         |           |
+  |       |               paper briefs          |         |           |
+  |       v                                     v         |           |
+  |  DataReport -------------------------> ExperimentPlan |           |
+  |                                                |      |           |
+  |                                          CodingAgent |           |
+  |                                               |       |           |
+  |                                         sandbox run -+           |
+  |                                               |                  |
+  |                                          Visualizer              |
+  |                                               |                  |
+  |                                         Memory (best)            |
+  |                                               |                  |
+  |  Exporter (Pine/MQL5, if asked) <---- best run                   |
+  |  Reporter <---- answers the question                              |
+  +------------------------------------------------------------------+
+                       |           |             |
+                       v           v             v
+                 Postgres (log)  S3/disk   OpenAlex/arXiv
+                                 (charts)   (on demand)
 ```
 
 **Flow (one research session):**
