@@ -11,7 +11,7 @@ import { API, Session, createSession, getSession, listSessions, login, runScript
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
 const TVChart = dynamic(() => import("@/components/TVChart"), { ssr: false });
 
-const AGENTS = ["Researcher", "Synthesist", "Quant Coder", "Backtester", "Visualizer", "Risk Critic", "Archivist"];
+const AGENTS = ["Researcher", "Synthesist", "Quant Coder", "Backtester", "Visualizer", "Archivist"];
 
 /* ---------------------------------------------------------------- entry */
 export default function Page() {
@@ -67,13 +67,12 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const [rounds, setRounds] = useState(3);
-  const [researchMode, setResearchMode] = useState("factor");
   const [events, setEvents] = useState<any[]>([]);
   const [running, setRunning] = useState(false);
   const [execRunning, setExecRunning] = useState(false);
   const [best, setBest] = useState<any | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [meta, setMeta] = useState<{ mode?: string; engine?: string; researchMode?: string }>({});
+  const [meta, setMeta] = useState<{ engine?: string }>({});
   const [files, setFiles] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [artifacts, setArtifacts] = useState<string[]>([]);
@@ -113,26 +112,8 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
 
   // one ingestion path for live events AND replay — workspace state is derived
   function ingest(ev: any, live: boolean) {
-    if (ev.type === "start") setMeta({ mode: ev.mode, engine: ev.engine, researchMode: ev.research_mode });
-    if (ev.type === "search")
-    return (
-      <div className="animate-in card p-2.5">
-        <div className="filecard-head mb-1.5">
-          <span className="text-faint">web search</span>
-          <span className="text-text/90 truncate">{ev.query}</span>
-          <span className="text-faint ml-auto">{(ev.results ?? []).length} results</span>
-        </div>
-        <div className="space-y-1">
-          {(ev.results ?? []).slice(0, 4).map((r: any, i: number) => (
-            <div key={i} className="text-[11.5px] text-muted leading-snug">
-              <span className="text-text/85">{r.title}</span>
-              <span className="text-faint"> · {r.source}{r.year ? ` ${r.year}` : ""}{r.citations != null ? ` · ${r.citations} cites` : ""}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  if (ev.type === "code") {
+    if (ev.type === "start") setMeta({ engine: ev.engine });
+    if (ev.type === "code") {
       setFiles((f) => ({ ...f, [ev.filename]: ev.code }));
       setDrafts((d) => { const { [ev.filename]: _omit, ...rest } = d; return rest; });
       if (live) openTab({ kind: "file", id: ev.filename });
@@ -168,7 +149,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
 
   async function ensureSession(seedText: string): Promise<number> {
     if (sessionId !== null) return sessionId;
-    const id = await createSession(user, seedText, rounds, researchMode);
+    const id = await createSession(user, seedText, rounds);
     setSessionId(id);
     return id;
   }
@@ -224,9 +205,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
       <header className="h-12 shrink-0 border-b hair flex items-center px-4 gap-3">
         <span className="font-semibold tracking-tight">AlphaSeek</span>
         <div className="ml-auto flex items-center gap-3 text-[11px] text-muted">
-          {meta.researchMode && <span className="px-2 py-0.5 border border-border rounded">{meta.researchMode}</span>}
           {meta.engine && <span className="px-2 py-0.5 border border-border rounded">sandbox {meta.engine}</span>}
-          {meta.mode && <span className="px-2 py-0.5 border border-border rounded">llm {meta.mode}</span>}
           <span className="text-text">{user}</span>
           <button onClick={onLogout} className="text-faint hover:text-text">exit</button>
         </div>
@@ -263,7 +242,7 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
                 className={`card p-2 text-[11.5px] w-full text-left hover:border-border2 transition-colors ${s.id === sessionId ? "border-border2" : ""}`}>
                 <div className="truncate text-text/85">{s.seed}</div>
                 <div className="flex justify-between mt-1 text-[10.5px] text-faint">
-                  <span className="tnum">#{s.id}</span><span>{s.mode ?? "factor"} · {s.status}</span>
+                  <span className="tnum">#{s.id}</span><span>{s.status}</span>
                 </div>
               </button>
             ))}
@@ -394,18 +373,6 @@ function Workspace({ user, onLogout }: { user: string; onLogout: () => void }) {
                 className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-[12.5px] outline-none focus:border-border2 resize-none disabled:opacity-50" />
               <div className="flex flex-col items-end gap-1.5">
                 <div className="flex items-center gap-2 bg-surface border border-border rounded-md px-2.5 py-1.5">
-                  <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
-                    <span className={`${researchMode === "factor" ? "text-text" : "text-faint"}`}>Factor</span>
-                    <div className="relative w-7 h-3.5">
-                      <input type="checkbox" checked={researchMode === "general"}
-                        onChange={(e) => setResearchMode(e.target.checked ? "general" : "factor")}
-                        className="sr-only" />
-                      <div className={`absolute inset-0 rounded-full transition-colors ${researchMode === "general" ? "bg-[#fafafa]" : "bg-border"}`} />
-                      <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full bg-surface transition-transform ${researchMode === "general" ? "translate-x-3.5" : ""}`} />
-                    </div>
-                    <span className={`${researchMode === "general" ? "text-text" : "text-faint"}`}>General</span>
-                  </label>
-                  <div className="w-px h-4 bg-border" />
                   <div className="flex items-center gap-1 text-[11px]">
                     <span className="text-faint">rounds</span>
                     <input type="number" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)}
@@ -433,7 +400,7 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
       </div>
     );
   if (ev.type === "start")
-    return <Rule>{ev.resumed ? "continuing" : "started"} · {ev.research_mode ?? "factor"} · {ev.iterations} rounds · {ev.engine} · {ev.dataset?.source === "real" ? `${ev.dataset.stocks} real stocks` : "dataset"}</Rule>;
+    return <Rule>{ev.resumed ? "continuing" : "started"} · {ev.iterations} rounds · {ev.engine}</Rule>;
   if (ev.type === "round") return <Rule>round {ev.step} / {ev.total}</Rule>;
   if (ev.type === "handoff")
     return <div className="text-[11.5px] text-muted animate-in flex items-center gap-1.5"><span className="dot on" /><span className="text-text/80">{ev.agent}</span> {ev.action}</div>;
@@ -488,6 +455,18 @@ function Row({ ev, onOpen }: { ev: any; onOpen: (t: Tab) => void }) {
               <span className="text-faint"> · {r.source}{r.year ? ` ${r.year}` : ""}{r.citations != null ? ` · ${r.citations} cites` : ""}</span>
             </div>
           ))}
+        </div>
+      </div>
+    );
+  if (ev.type === "profile")
+    return (
+      <div className="animate-in card p-2.5">
+        <div className="filecard-head mb-1">
+          <span className="text-faint">data profile</span>
+          <span className="text-text/90 truncate">{(ev.report ? Object.keys(ev.report).length : 0)} keys</span>
+        </div>
+        <div className="text-[11.5px] text-muted leading-snug">
+          {ev.report && typeof ev.report === "object" ? JSON.stringify(ev.report, null, 2).slice(0, 600) : String(ev.stdout ?? "").slice(0, 300)}
         </div>
       </div>
     );

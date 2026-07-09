@@ -1,5 +1,4 @@
-# AlphaSeek v3 infrastructure — the backing services the scaled architecture runs on.
-# Additive: the existing single-process app keeps working; v3 components attach to these.
+# AlphaSeek infrastructure — backing services for the app (streaming, persistence).
 #   docker compose up -d        # start all
 #   docker compose ps           # status
 services:
@@ -29,12 +28,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  # Persistent vector store for the cross-session paper/RAG corpus (fastembed vectors).
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports: ["6333:6333"]
-    volumes: ["qdrant-data:/qdrant/storage"]
 
   # Kafka-compatible event streaming (log-based persistence, replay, consumer groups).
   # Drop-in for Redis pub/sub — same API as Kafka, single binary, no JVM.
@@ -66,19 +59,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # LLM gateway: one OpenAI-compatible endpoint with routing/failover/cost tracking.
-  # Point the app at it via LLM_BASE_URL=http://localhost:4000.
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    ports: ["4000:4000"]
-    volumes: ["./litellm-config.yaml:/app/config.yaml:ro"]
-    environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-
 volumes:
   redis-data:
   pg-data:
-  qdrant-data:
   redpanda-data:

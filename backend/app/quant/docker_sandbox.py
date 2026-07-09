@@ -1,7 +1,7 @@
 """Run agent-written research SCRIPTS — Docker-hardened, artifact-collecting.
 
 Both engines execute the SAME `sandbox/runner.py` contract (script imports
-`alphaseek`, loads af.DATA, calls af.submit(signal), may save artifacts):
+`alphaseek`, loads af.DATA, saves artifacts to af.OUT, prints JSON results):
 
   * docker     — hardened container: no network, read-only fs, non-root,
                  memory/CPU caps. /in (code, ro) and /out (artifacts, rw) mounts.
@@ -77,11 +77,11 @@ def run_factor_code(
     image: str = IMAGE,
     manifest_src: Path | None = None,
 ) -> dict:
-    """Execute an agent research script; return metrics + stdout + artifacts.
+    """Execute an agent research script; return stdout + artifacts.
 
     `image` selects a provisioned sandbox image (base or a dep-layered one).
-    `manifest_src` mounts a prior run's result manifest at /in/manifest.npz so
-    a visualization script can load it via alphaseek.manifest() without recomputing.
+    `manifest_src` (optional) mounts a prior run's saved arrays so a
+    visualization script can load them without recomputing.
     """
     global _docker_ok
     import logging
@@ -94,8 +94,6 @@ def run_factor_code(
     out = tmp / "out"
     out.mkdir()
     (tmp / "research.py").write_text(code)
-    if manifest_src and Path(manifest_src).is_file():
-        shutil.copy(manifest_src, tmp / "manifest.npz")
     try:
         if docker_available():
             try:
@@ -116,19 +114,19 @@ def run_factor_code(
         from app import storage
 
         stored = []
+        data_artifacts = []
         for fn in result.get("artifacts", []):
             src = out / fn
             if src.is_file():
                 dest = f"{uuid.uuid4().hex[:8]}_{fn}"
                 storage.put(src, dest)
                 stored.append(dest)
+                if fn.lower().endswith(".npz"):
+                    data_artifacts.append(dest)
         result["artifacts"] = stored
-        # keep the result manifest so a later viz run can mount it
-        man = out / "manifest.npz"
-        if man.is_file():
-            dest = ARTIFACT_STORE / f"{uuid.uuid4().hex[:8]}_manifest.npz"
-            shutil.copy(man, dest)
-            result["manifest_path"] = str(dest)
+        # keep any saved .npz arrays so a later viz run can mount them
+        if data_artifacts:
+            result["data_artifacts"] = data_artifacts
         result["elapsed_s"] = round(_time.time() - t0, 2)
         return result
     finally:
@@ -145,12 +143,14 @@ def _parse(p: subprocess.CompletedProcess) -> dict:
     raise SandboxUnavailable(f"runner produced no JSON. stderr: {p.stderr[:300]}")
 
 
-def _sess_npz(uploads_dir: Path | None) -> Path | None:
-    """Return the path to a session-specific market.npz, if one exists."""
+def _sess_file(uploads_dir: Path | None) -> Path | None:
+    """Return the path to the first file in the uploads directory, if any."""
     if uploads_dir is not None:
-        candidate = Path(uploads_dir) / "market.npz"
-        if candidate.is_file():
-            return candidate
+        ud = Path(uploads_dir)
+        if ud.is_dir():
+            for f in sorted(ud.iterdir()):
+                if f.is_file():
+                    return f
     return None
 
 
@@ -180,11 +180,13 @@ def _exec_docker(
         "-v",
         f"{RUNNER}:/app/runner.py:ro",
     ]
-    sess_npz = _sess_npz(uploads_dir)
-    if sess_npz:
-        cmd += ["-v", f"{sess_npz}:/data/market.npz:ro"]
+    sess_file = _sess_file(uploads_dir)
+    if sess_file:
+        cmd += ["-v", f"{sess_file}:/data/default:ro"]
+        cmd += ["-e", "DATA_PATH=/data/default"]
     else:
         cmd += ["-v", f"{DATA_DIR}:/data:ro"]
+        cmd += ["-e", "DATA_PATH=/data/market.npz"]
     cmd += [
         "-v",
         f"{tmp}:/in:ro",
@@ -202,7 +204,8 @@ def _exec_docker(
 
 
 def _exec_local(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None) -> dict:
-    data_path = str(_sess_npz(uploads_dir) or DATA_DIR / "market.npz")
+    sess_file = _sess_file(uploads_dir)
+    data_path = str(sess_file or DATA_DIR / "market.npz")
     env = dict(
         os.environ,
         ARTIFACTS_DIR=str(out),
@@ -210,7 +213,6 @@ def _exec_local(tmp: Path, out: Path, timeout: int, uploads_dir: Path | None) ->
         MPLCONFIGDIR=str(tmp / "mpl"),
         DATA_PATH=data_path,
         UPLOADS_DIR=str(uploads_dir or ""),
-        MANIFEST_PATH=str(tmp / "manifest.npz"),
     )
     try:
         p = subprocess.run(

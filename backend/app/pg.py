@@ -23,14 +23,13 @@ def init_db() -> None:
                 name TEXT PRIMARY KEY, created DOUBLE PRECISION);
             CREATE TABLE IF NOT EXISTS sessions (
                 id SERIAL PRIMARY KEY, "user" TEXT, seed TEXT, iterations INTEGER,
-                mode TEXT DEFAULT 'factor', status TEXT, created DOUBLE PRECISION, best_json JSONB);
+                status TEXT, created DOUBLE PRECISION, best_json JSONB);
             CREATE TABLE IF NOT EXISTS events (
                 id BIGSERIAL PRIMARY KEY, session_id INTEGER, ts DOUBLE PRECISION,
                 payload JSONB);
             CREATE INDEX IF NOT EXISTS events_session_id_idx ON events(session_id, id);
         """)
         # migrations for existing tables
-        _add_column_if_missing(c, "sessions", "mode", "TEXT DEFAULT 'factor'")
         _add_column_if_missing(c, "sessions", "iterations", "INTEGER")
 
 
@@ -56,12 +55,12 @@ def ensure_user(name: str) -> None:
         )
 
 
-def create_session(user: str, seed: str, iterations: int, mode: str) -> int:
+def create_session(user: str, seed: str, iterations: int) -> int:
     with _conn() as c:
         row = c.execute(
-            'INSERT INTO sessions("user", seed, iterations, mode, status, created) '
-            "VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
-            (user, seed, iterations, mode, "pending", time.time()),
+            'INSERT INTO sessions("user", seed, iterations, status, created) '
+            "VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (user, seed, iterations, "pending", time.time()),
         ).fetchone()
         return int(row["id"])
 
@@ -69,7 +68,7 @@ def create_session(user: str, seed: str, iterations: int, mode: str) -> int:
 def list_sessions(user: str) -> list[dict]:
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, seed, iterations, mode, status, created, best_json FROM sessions "
+            "SELECT id, seed, iterations, status, created, best_json FROM sessions "
             'WHERE "user"=%s ORDER BY created DESC',
             (user,),
         ).fetchall()
@@ -78,7 +77,6 @@ def list_sessions(user: str) -> list[dict]:
             "id": r["id"],
             "seed": r["seed"],
             "iterations": r["iterations"],
-            "mode": r["mode"],
             "status": r["status"],
             "created": r["created"],
             "best": r["best_json"],
@@ -100,7 +98,6 @@ def get_session(session_id: int) -> dict | None:
         "user": s["user"],
         "seed": s["seed"],
         "iterations": s["iterations"],
-        "mode": s["mode"],
         "status": s["status"],
         "created": s["created"],
         "best": s["best_json"],

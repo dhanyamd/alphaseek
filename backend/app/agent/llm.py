@@ -110,7 +110,7 @@ class _AnthropicProvider:
 
 def _role_chains(suffix: str) -> dict[str, list[str]]:
     chains: dict[str, list[str]] = {}
-    for role in ("researcher", "coder", "critic", "viz", "reporter", "reader", "exporter"):
+    for role in ("researcher", "coder", "viz", "reporter", "reader", "exporter"):
         raw = os.getenv(f"LLM_MODEL_{role.upper()}{suffix}", "")
         models = [m.strip() for m in raw.split(",") if m.strip()]
         if models:
@@ -132,7 +132,7 @@ class LLM:
         ]
         self.role_models = _role_chains("")
         self.role_providers: dict[str, str] = {}
-        for role in ("researcher", "coder", "critic", "viz", "reporter", "reader", "exporter"):
+        for role in ("researcher", "coder", "viz", "reporter", "reader", "exporter"):
             p = os.getenv(f"LLM_PROVIDER_{role.upper()}", "").strip().lower()
             if p:
                 self.role_providers[role] = p
@@ -197,7 +197,7 @@ class LLM:
     def mode(self) -> str:
         return "live" if self.configured else "unconfigured"
 
-    # ------------------------------------------------------------------ core
+    #  core
 
     def chat(
         self,
@@ -391,7 +391,7 @@ class LLM:
             f"LLM tool call unavailable (tried {', '.join(self._models(role))}): {last_err}"
         ) from last_err
 
-    # --------------------------------------------------------------- Anthropic internals
+    #  Anthropic internals
 
     def _anthropic_tool_call(
         self,
@@ -554,7 +554,7 @@ class LLM:
             return obj
         raise LLMError(f"Model returned unparseable JSON: {raw[:200]!r}")
 
-    # --------------------------------------------------------------- helpers
+    #  helpers
     @staticmethod
     def _retry_after(err: Exception) -> float | None:
         msg = str(err)

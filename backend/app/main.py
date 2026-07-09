@@ -53,14 +53,6 @@ class SessionIn(BaseModel):
     user: str
     seed: str
     iterations: int = 8
-    mode: str
-
-    @field_validator("mode")
-    @classmethod
-    def mode_valid(cls, v: str) -> str:
-        if v not in ("factor", "general"):
-            raise ValueError("mode must be 'factor' or 'general'")
-        return v
 
 
 @app.get("/api/health")
@@ -75,11 +67,11 @@ def health() -> dict:
 
 @app.post("/api/sessions/{session_id}/upload")
 async def upload(session_id: int, file: UploadFile, replace_default: bool = False):
-    """Attach a file (CSV, Parquet, Excel, JSON, NPZ) to a session.
+    """Attach a raw file (CSV, Parquet, Excel, JSON, NPZ, …) to a session.
 
-    With ``replace_default=true`` the file is converted to ``market.npz``
-    and mounted at ``/data/market.npz`` in the sandbox, replacing the default
-    yfinance dataset.  The agent uses ``np.load(af.DATA)`` as usual.
+    With ``replace_default=true`` the file replaces the default yfinance dataset.
+    The raw file is saved as-is.  The coding agent's step 0 analyses it and
+    builds the NPZ — no backend conversion.
     """
     sdir = UPLOAD_ROOT / str(session_id)
     sdir.mkdir(exist_ok=True)
@@ -87,23 +79,14 @@ async def upload(session_id: int, file: UploadFile, replace_default: bool = Fals
     dest = sdir / safe
     dest.write_bytes(await file.read())
 
-    replaced = False
-    if replace_default:
-        from app.quant.convert import upload_to_npz
-
-        npz_dst = sdir / "market.npz"
-        try:
-            meta = upload_to_npz(dest, npz_dst)
-            replaced = True
-        except Exception as e:
-            return {"ok": False, "error": f"conversion failed: {e}", "filename": safe}
-
-    db.append_event(session_id, {"type": "upload", "filename": safe, "replaced_default": replaced})
+    db.append_event(
+        session_id, {"type": "upload", "filename": safe, "replaced_default": replace_default}
+    )
     return {
         "ok": True,
         "filename": safe,
         "files": sorted(p.name for p in sdir.iterdir()),
-        "replaced_default": replaced,
+        "replaced_default": replace_default,
     }
 
 
@@ -171,7 +154,7 @@ def sessions(user: str) -> dict:
 
 @app.post("/api/sessions")
 def new_session(body: SessionIn) -> dict:
-    sid = db.create_session(body.user.strip(), body.seed.strip(), body.iterations, body.mode)
+    sid = db.create_session(body.user.strip(), body.seed.strip(), body.iterations)
     return {"id": sid}
 
 
@@ -227,7 +210,6 @@ async def stream(session_id: int, prompt: str | None = None):
         try:
             for event in research(
                 goal,
-                mode=s.get("mode", "factor"),
                 iterations=s["iterations"],
                 mem=mem,
                 uploads_dir=sdir if upload_names else None,
@@ -273,7 +255,9 @@ async def stream(session_id: int, prompt: str | None = None):
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    break  # Redis timed out — fall through to DB-polling
+                    if sub.done():
+                        break  # listener thread finished — fall through to DB-polling
+                    continue  # keep waiting for Redis (worker is just busy computing)
                 yield {"data": json.dumps(ev)}
                 if ev.get("type") in ("done", "close"):
                     done = True

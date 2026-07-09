@@ -5,7 +5,6 @@ export type Session = {
   id: number;
   seed: string;
   iterations: number;
-  mode: string;
   status: string;
   created: number;
   best: any | null;
@@ -26,11 +25,10 @@ export async function listSessions(user: string): Promise<Session[]> {
   return j.sessions ?? [];
 }
 
-export async function createSession(user: string, seed: string, iterations: number, mode: string): Promise<number> {
+export async function createSession(user: string, seed: string, iterations: number): Promise<number> {
   const r = await fetch(`${API}/api/sessions`, {
-    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user, seed, iterations, mode }),
+    body: JSON.stringify({ user, seed, iterations }),
   });
   const j = await r.json();
   return j.id;

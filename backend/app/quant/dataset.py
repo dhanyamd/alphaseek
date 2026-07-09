@@ -25,7 +25,7 @@ import numpy as np
 import requests
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-NPZ_PATH = DATA_DIR / "market.npz"
+NPZ_PATH = Path(os.getenv("ALPHASEEK_DATASET_PATH", str(DATA_DIR / "market.npz")))
 
 # Default universe — a sensible out-of-box set; override entirely via env.
 _DEFAULT_UNIVERSE = (
@@ -75,9 +75,9 @@ def _build_yfinance(years: int) -> dict:
 
     valid = slice(BURN_DAYS, -1)
     arrays = {
-        "px_close": np.nan_to_num(close.values[valid], nan=0.0),
-        "px_volume": np.nan_to_num(volume.values[valid], nan=0.0),
-        "px_returns": np.nan_to_num(ret.values[valid], nan=0.0),
+        "close": np.nan_to_num(close.values[valid], nan=0.0),
+        "volume": np.nan_to_num(volume.values[valid], nan=0.0),
+        "returns": np.nan_to_num(ret.values[valid], nan=0.0),
         "fwd": np.nan_to_num(fwd.values[valid], nan=0.0),
         "tickers": np.array(list(close.columns)),
         "dates": np.array([d.strftime("%Y-%m-%d") for d in close.index[valid]]),
@@ -85,8 +85,11 @@ def _build_yfinance(years: int) -> dict:
 
     DATA_DIR.mkdir(exist_ok=True)
     np.savez_compressed(NPZ_PATH, **arrays)
-    T, N = arrays["fwd"].shape
-    return {"days": T, "stocks": N, "inputs": sorted(k[3:] for k in arrays if k.startswith("px_"))}
+    T = max(
+        (a.shape[0] for a in arrays.values() if isinstance(a, np.ndarray) and a.ndim >= 2),
+        default=0,
+    )
+    return {"days": int(T)}
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +130,7 @@ def _polygon_aggs(ticker: str, from_date: str, to_date: str) -> list[dict]:
     return data["results"]
 
 
-def _build_polygon(years: int) -> dict:
+def _build_polygon(years: int) -> dict:  # noqa: PLR0915
     import pandas as pd
 
     end = time.strftime("%Y-%m-%d")
@@ -172,9 +175,9 @@ def _build_polygon(years: int) -> dict:
 
     valid = slice(BURN_DAYS, -1)
     arrays = {
-        "px_close": np.nan_to_num(close.values[valid], nan=0.0),
-        "px_volume": np.nan_to_num(volume.values[valid], nan=0.0),
-        "px_returns": np.nan_to_num(ret.values[valid], nan=0.0),
+        "close": np.nan_to_num(close.values[valid], nan=0.0),
+        "volume": np.nan_to_num(volume.values[valid], nan=0.0),
+        "returns": np.nan_to_num(ret.values[valid], nan=0.0),
         "fwd": np.nan_to_num(fwd.values[valid], nan=0.0),
         "tickers": np.array(list(close.columns)),
         "dates": np.array([d.strftime("%Y-%m-%d") for d in close.index[valid]]),
@@ -182,8 +185,11 @@ def _build_polygon(years: int) -> dict:
 
     DATA_DIR.mkdir(exist_ok=True)
     np.savez_compressed(NPZ_PATH, **arrays)
-    T, N = arrays["fwd"].shape
-    return {"days": T, "stocks": N, "inputs": sorted(k[3:] for k in arrays if k.startswith("px_"))}
+    T = max(
+        (a.shape[0] for a in arrays.values() if isinstance(a, np.ndarray) and a.ndim >= 2),
+        default=0,
+    )
+    return {"days": int(T)}
 
 
 def ensure_dataset_async() -> None:
@@ -218,43 +224,17 @@ def dataset_status() -> dict:
 
 def dataset_meta() -> dict:
     """Introspect whatever is actually in the cache — no assumptions about which
-    columns exist. Works for the default market data or any other panel set."""
+    keys exist or what naming convention they follow."""
     if not NPZ_PATH.exists():
         return {"source": "missing", "data_source": SOURCE}
     with np.load(NPZ_PATH, allow_pickle=False) as z:
-        _RESERVED = {"fwd", "tickers", "dates"}
-        _PREFIX = "px_"
-        px_keys = [k for k in z.files if k.startswith(_PREFIX)]
-        if px_keys:
-            cols = [k[len(_PREFIX) :] for k in px_keys]
-        else:
-            # No px_ convention — treat every non-metadata key as a panel
-            px_keys = [k for k in z.files if k not in _RESERVED and not k.startswith("f_")]
-            cols = list(px_keys)
-
-        # Discover shape from fwd if it exists, else from the first panel
-        T, N = 0, 0
-        if "fwd" in z.files:
-            arr = z["fwd"]
-            if arr.ndim == 2:
-                T, N = arr.shape
-            elif arr.ndim == 1:
-                T, N = arr.shape[0], 1
-        elif px_keys:
-            arr = z[px_keys[0]]
-            if arr.ndim == 2:
-                T, N = arr.shape
-            elif arr.ndim == 1:
-                T, N = arr.shape[0], 1
-
-        start = str(z["dates"][0]) if "dates" in z.files and len(z["dates"]) > 0 else "?"
-        end = str(z["dates"][-1]) if "dates" in z.files and len(z["dates"]) > 0 else "?"
+        keys = sorted(z.files)
+        shapes = {k: list(z[k].shape) for k in keys}
+        dtypes = {k: str(z[k].dtype) for k in keys}
         return {
             "source": "real",
             "data_source": SOURCE,
-            "days": int(T),
-            "stocks": int(N),
-            "start": start,
-            "end": end,
-            "inputs": sorted(cols),
+            "keys": keys,
+            "shapes": shapes,
+            "dtypes": dtypes,
         }

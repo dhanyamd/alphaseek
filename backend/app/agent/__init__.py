@@ -1,1 +1,1 @@
-"""The autonomous research agent: propose -> generate -> backtest -> evaluate -> remember -> iterate."""
+"""The autonomous research agent: profile -> literature -> synthesize -> code -> visualize -> report."""

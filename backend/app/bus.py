@@ -32,8 +32,7 @@ def _redis_client():
 def _kafka_producer():
     global _kafka
     if _kafka is None:
-        from kafka import KafkaProducer
-
+        from kafka import KafkaProducer  
         _brokers = (
             settings.redpanda_brokers.split(",")
             if "," in settings.redpanda_brokers
