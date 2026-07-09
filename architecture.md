@@ -9,29 +9,13 @@ AlphaSeek is an LLM-driven quantitative research platform. A multi-agent team ex
 ## Pipeline (One Research Session)
 
 ```
-User prompt
-  |
-  v
-+------------------------------------------------------------------+
-| 0. DATA PROFILER   Backend reads raw file (NPZ/CSV/PARQUET/...), |
-|                    LLM interprets metadata -> DataReport          |
-+------------------------------------------------------------------+
-| 1. LITERATURE      Researcher plans queries -> OpenAlex          |
-|                    search -> arXiv full-text -> PaperBriefs       |
-+------------------------------------------------------------------+
-| 2. SYNTHESIST      ExperimentPlan from DataReport + briefs       |
-|                    (Pydantic schema auto-injected in prompt)      |
-+------------------------------------------------------------------+
-| 3. CODER           ONE Python script per round, runs in          |
-|                    sandbox, prints JSON results to stdout,        |
-|                    saves arrays to af.OUT/*.npz                   |
-+------------------------------------------------------------------+
-| 4. VISUALIZER      Plotly charts from whatever .npz keys exist   |
-+------------------------------------------------------------------+
-| 5. EXPORTER        Pine Script / MQL5 (only if prompt asks)      |
-+------------------------------------------------------------------+
-| 6. REPORTER        Answers the user's question in plain text     |
-+------------------------------------------------------------------+
+  User prompt
+    -> DataProfiler -> DataReport
+    -> Literature (OpenAlex/arXiv) -> PaperBriefs
+    -> Synthesist -> ExperimentPlan
+    -> (repeated N rounds) CodingAgent -> sandbox -> Visualizer -> Memory (best)
+    -> Exporter (Pine/MQL5, if asked)
+    -> Reporter
 ```
 
 Stages 0-1 run once. Stages 2-4 repeat for N rounds (configurable, default 8). Stages 5-6 run once at the end.
@@ -42,49 +26,49 @@ Stages 0-1 run once. Stages 2-4 repeat for N rounds (configurable, default 8). S
 
 ```
 alphaseek/
-+-- backend/
-|   +-- app/
-|   |   +-- agent/
-|   |   |   +-- agents.py         # 7 agent classes (Profiler->Reporter)
-|   |   |   +-- llm.py            # LLM client (OpenAI + Anthropic, multi-provider failover)
-|   |   |   +-- memory.py         # Experiment memory (flat list, no metric assumptions)
-|   |   |   +-- orchestrator.py   # Research loop, yields SSE events
-|   |   |   +-- reader.py         # Paper reading (PDF full-text -> structured brief)
-|   |   |   +-- research_tools.py # OpenAlex + arXiv search, PDF fetching
-|   |   |   +-- evaluate.py       # unused (legacy)
-|   |   |   +-- rag.py            # unused (legacy)
-|   |   +-- quant/
-|   |   |   +-- dataset.py        # Dataset builder (yfinance/Polygon, env-configurable)
-|   |   |   +-- docker_sandbox.py # Docker/fallback execution, artifact collection
-|   |   |   +-- schemas.py        # DataReport + ExperimentPlan (Pydantic)
-|   |   |   +-- provision.py      # Agent-declared pip packages -> cached Docker layers
-|   |   |   +-- convert.py        # No-op: raw uploads pass through, coder handles conversion
-|   |   |   +-- backtest.py       # FactorError only
-|   |   +-- main.py               # FastAPI app: sessions, uploads, SSE stream, manual run
-|   |   +-- pg.py                 # Postgres persistence
-|   |   +-- store.py              # Facade -> pg.py
-|   |   +-- bus.py                # Event bus (Redis pub/sub + optional Redpanda)
-|   |   +-- storage.py            # Artifact store (local disk + optional S3)
-|   |   +-- settings.py           # All env vars, single source of truth
-|   +-- data/                     # Cached dataset (market.npz, built by dataset.py)
-|
-+-- frontend/
-|   +-- app/
-|   |   +-- page.tsx              # Main workspace: sessions, editor, artifact viewer, event feed
-|   |   +-- layout.tsx            # Root layout
-|   +-- components/
-|   |   +-- CodeBlock.tsx         # Syntax-highlighted code display
-|   |   +-- EquityChart.tsx       # Mini equity curve sparkline
-|   |   +-- StrategyViewer.tsx    # Pine/MQL5 strategy display
-|   |   +-- TVChart.tsx           # TradingView-like chart widget
-|   +-- lib/
-|       +-- api.ts                # API client (REST + SSE)
-|
-+-- sandbox/
-|   +-- runner.py                 # Thin executor: af.DATA / af.OUT / af.uploads(), captures stdout
-|   +-- Dockerfile                # Sandbox image (quant stack, no network at runtime)
-|
-+-- architecture.md               # This file
+    backend/
+        app/
+            agent/
+                agents.py           # 7 agent classes (Profiler->Reporter)
+                llm.py              # LLM client (OpenAI + Anthropic, multi-provider failover)
+                memory.py           # Experiment memory (flat list, no metric assumptions)
+                orchestrator.py     # Research loop, yields SSE events
+                reader.py           # Paper reading (PDF full-text -> structured brief)
+                research_tools.py   # OpenAlex + arXiv search, PDF fetching
+                evaluate.py         # unused (legacy)
+                rag.py              # unused (legacy)
+            quant/
+                dataset.py          # Dataset builder (yfinance/Polygon, env-configurable)
+                docker_sandbox.py   # Docker/fallback execution, artifact collection
+                schemas.py          # DataReport + ExperimentPlan (Pydantic)
+                provision.py        # Agent-declared pip packages -> cached Docker layers
+                convert.py          # No-op: raw uploads pass through, coder handles conversion
+                backtest.py         # FactorError only
+            main.py                 # FastAPI app: sessions, uploads, SSE stream, manual run
+            pg.py                   # Postgres persistence
+            store.py                # Facade -> pg.py
+            bus.py                  # Event bus (Redis pub/sub + optional Redpanda)
+            storage.py              # Artifact store (local disk + optional S3)
+            settings.py             # All env vars, single source of truth
+        data/                       # Cached dataset (market.npz, built by dataset.py)
+
+    frontend/
+        app/
+            page.tsx                # Main workspace: sessions, editor, artifact viewer, event feed
+            layout.tsx              # Root layout
+        components/
+            CodeBlock.tsx           # Syntax-highlighted code display
+            EquityChart.tsx         # Mini equity curve sparkline
+            StrategyViewer.tsx      # Pine/MQL5 strategy display
+            TVChart.tsx             # TradingView-like chart widget
+        lib/
+            api.ts                  # API client (REST + SSE)
+
+    sandbox/
+        runner.py                   # Thin executor: af.DATA / af.OUT / af.uploads(), captures stdout
+        Dockerfile                  # Sandbox image (quant stack, no network at runtime)
+
+    architecture.md                 # This file
 ```
 
 ---

@@ -11,35 +11,25 @@ discovers the data schema, picks the evaluation metric, and writes all code.
 ## System architecture
 
 ```
-   Browser ---- prompt ----> FastAPI ----- SSE stream ----> UI
-      ^                                                     |
-      +--------- live events (Redis pub/sub + Redpanda) ----+
+    Browser -- prompt --> FastAPI -- SSE stream --> UI
+                               |
+                          pipeline events
+                          (Redis + Redpanda)
 
 
-  +------------------------------------------------------------------+
-  |  RESEARCH PIPELINE (no mode)                                     |
-  |                                                                   |
-  |  DataProfiler -----> Researcher -------> Synthesist -\            |
-  |       |             (OpenAlex/arXiv)        |         |           |
-  |       |               paper briefs          |         |           |
-  |       v                                     v         |           |
-  |  DataReport -------------------------> ExperimentPlan |           |
-  |                                                |      |           |
-  |                                          CodingAgent |           |
-  |                                               |       |           |
-  |                                         sandbox run -+           |
-  |                                               |                  |
-  |                                          Visualizer              |
-  |                                               |                  |
-  |                                         Memory (best)            |
-  |                                               |                  |
-  |  Exporter (Pine/MQL5, if asked) <---- best run                   |
-  |  Reporter <---- answers the question                              |
-  +------------------------------------------------------------------+
-                       |           |             |
-                       v           v             v
-                 Postgres (log)  S3/disk   OpenAlex/arXiv
-                                 (charts)   (on demand)
+  RESEARCH PIPELINE (one pass, repeated N rounds):
+
+    DataProfiler -> DataReport
+    Researcher   -> PaperBriefs (OpenAlex/arXiv)
+    Synthesist   -> ExperimentPlan
+    CodingAgent  -> sandbox run (re-runs on errors)
+    Visualizer   -> charts
+    Memory       -> remembers best result
+
+    Then: Exporter (Pine/MQL5, if asked) -> best run
+          Reporter -> answers the question
+
+    Outputs: Postgres (event log) | S3/disk (charts) | OpenAlex/arXiv (on demand)
 ```
 
 **Flow (one research session):**
