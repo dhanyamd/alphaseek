@@ -55,10 +55,12 @@ flowchart TB
     API --> PG
     Prof -.-> S3
 
-    classDef agent fill:#eef2ff,stroke:#6366f1,color:#312e81
-    classDef client fill:#f0fdf4,stroke:#22c55e,color:#14532d
-    classDef infrafill fill:#fef2f2,stroke:#f87171,color:#7f1d1d
-    class Prof,Res,Syn,Cod,San,Viz,Exp,Rep agent
+    classDef agent fill:#6366f1,stroke:#4f46e5,color:#fff,stroke-width:2px
+    classDef client fill:#22c55e,stroke:#16a34a,color:#fff,stroke-width:2px
+    classDef infrafill fill:#f43f5e,stroke:#e11d48,color:#fff,stroke-width:2px
+    classDef loop fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    class Prof,Res,Syn,Cod,Viz agent
+    class San,Exp,Rep loop
     class Browse,API,Screen client
     class PG,EV,S3 infrafill
 ```
