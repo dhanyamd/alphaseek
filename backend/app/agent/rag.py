@@ -12,6 +12,9 @@ Sparse: Qdrant/bm25 (fastembed sparse embedding, stored as Qdrant SparseVector)
 Fusion: Qdrant native RRF via FusionQuery
 """
 
+from fastembed.common.types import NumpyArray
+
+
 from __future__ import annotations
 
 import hashlib
@@ -77,7 +80,7 @@ def index_paper(paper) -> int:
         return 0
 
     chunks = _chunk(text)
-    vecs = list(_get_embedder().embed(chunks))
+    vecs = list[NumpyArray](_get_embedder().embed(chunks))
 
     # Build parent sections: each chunk's parent is the surrounding context
     sections = _build_parent_sections(chunks)

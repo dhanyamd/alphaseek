@@ -10,27 +10,73 @@ discovers the data schema, picks the evaluation metric, and writes all code.
 
 ## System architecture
 
+```mermaid
+flowchart TD
+    A["Browser"] -->|"research question"| B["FastAPI"]
+
+    subgraph ORCH ["Orchestrator"]
+        O["Orchestrator"]
+    end
+
+    B --> O
+
+    subgraph AGENTS ["Agent team"]
+        direction TB
+        P["Data Profiler"]
+        R["Researcher"]
+        SYN["Synthesist"]
+        C["Coding Agent"]
+        X["Sandbox"]
+        V["Visualizer"]
+        E["Exporter"]
+        REP["Reporter"]
+    end
+
+    subgraph BUS ["Event bus"]
+        EV["Redis / Redpanda"]
+    end
+
+    subgraph STORE ["State"]
+        MEM["Memory (best result)"]
+        DB[("Postgres")]
+    end
+
+    O --> P
+    O --> R
+    O --> SYN
+    O --> C
+    O --> X
+    O --> V
+    O --> E
+    O --> REP
+
+    P -->|"DataReport"| SYN
+    R -->|"PaperBriefs"| SYN
+    SYN -->|"ExperimentPlan"| C
+    C -->|"script"| X
+    X -->|"results + arrays"| V
+    V -->|"charts"| MEM
+    MEM -.->|"best run, loop"| C
+    X -.->|"feedback on error"| C
+    MEM --> E
+    MEM --> REP
+    REP -->|"final answer"| A
+
+    O <--> EV
+    O --> DB
+
+    classDef agent fill:#0984e3,stroke:#0652DD,color:#fff,font-weight:bold
+    classDef orch fill:#6c5ce7,stroke:#4834d4,color:#fff,font-weight:bold
+    classDef store fill:#fdcb6e,stroke:#f39c12,color:#2d3436
+    classDef infra fill:#dfe6e9,stroke:#b2bec3,color:#2d3436
+
+    class P,R,SYN,C,X,V,E,REP agent
+    class O orch
+    class MEM,DB store
+    class EV infra
 ```
-    Browser -- prompt --> FastAPI -- SSE stream --> UI
-                               |
-                          pipeline events
-                          (Redis + Redpanda)
 
-
-  RESEARCH PIPELINE (one pass, repeated N rounds):
-
-    DataProfiler -> DataReport
-    Researcher   -> PaperBriefs (OpenAlex/arXiv)
-    Synthesist   -> ExperimentPlan
-    CodingAgent  -> sandbox run (re-runs on errors)
-    Visualizer   -> charts
-    Memory       -> remembers best result
-
-    Then: Exporter (Pine/MQL5, if asked) -> best run
-          Reporter -> answers the question
-
-    Outputs: Postgres (event log) | S3/disk (charts) | OpenAlex/arXiv (on demand)
-```
+<small>The orchestrator coordinates six agents that stream events live over Redis/Redpanda and log everything to Postgres. Sandbox errors feed back to the coder; best results loop through memory for N rounds.</small>
 
 **Flow (one research session):**
 

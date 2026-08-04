@@ -260,7 +260,7 @@ def _profile(seed: str, uploads: list[str], uploads_dir, state) -> Iterator[dict
     }
 
 
-def _literature(seed, researcher, mem, state) -> Iterator[dict]:
+def _literature(seed, researcher: Researcher, mem, state) -> Iterator[dict]:
     """Plan queries → search → read top papers into briefs."""
     yield {
         "type": "handoff",
