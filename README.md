@@ -11,72 +11,59 @@ discovers the data schema, picks the evaluation metric, and writes all code.
 ## System architecture
 
 ```mermaid
-flowchart TD
-    A["Browser"] -->|"research question"| B["FastAPI"]
+flowchart TB
 
-    subgraph ORCH ["Orchestrator"]
-        O["Orchestrator"]
+    subgraph Client ["Client"]
+        direction LR
+        Browse["Browser"] -->|research question| API["FastAPI"]
+        API -. SSE live stream .-> Screen["UI"]
     end
 
-    B --> O
-
-    subgraph AGENTS ["Agent team"]
+    subgraph Backend ["Backend — research pipeline"]
         direction TB
-        P["Data Profiler"]
-        R["Researcher"]
-        SYN["Synthesist"]
-        C["Coding Agent"]
-        X["Sandbox"]
-        V["Visualizer"]
-        E["Exporter"]
-        REP["Reporter"]
+        Prof["Data Profiler"]
+        Res["Researcher"]
+        Syn["Synthesist"]
+        Cod["Coding Agent"]
+        San["Sandbox"]
+        Viz["Visualizer"]
+        Exp["Exporter"]
+        Rep["Reporter"]
+
+        Prof -->|DataReport| Res
+        Res -->|PaperBriefs| Syn
+        Syn -->|ExperimentPlan| Cod
+        Cod -->|runs script| San
+        San -->|arrays| Viz
+        San -. error/repair .-> Cod
+        Viz --> Syn
+        Viz --> Exp
+        Viz --> Rep
     end
 
-    subgraph BUS ["Event bus"]
-        EV["Redis / Redpanda"]
+    API --> Prof
+    Rep -.->|final answer| Screen
+
+    subgraph Infra ["Backing services"]
+        direction LR
+        PG[("Postgres")]
+        EV[("Redis / Redpanda")]
+        S3[("S3 / disk")]
     end
 
-    subgraph STORE ["State"]
-        MEM["Memory (best result)"]
-        DB[("Postgres")]
-    end
+    API <--> EV
+    API --> PG
+    Prof -.-> S3
 
-    O --> P
-    O --> R
-    O --> SYN
-    O --> C
-    O --> X
-    O --> V
-    O --> E
-    O --> REP
-
-    P -->|"DataReport"| SYN
-    R -->|"PaperBriefs"| SYN
-    SYN -->|"ExperimentPlan"| C
-    C -->|"script"| X
-    X -->|"results + arrays"| V
-    V -->|"charts"| MEM
-    MEM -.->|"best run, loop"| C
-    X -.->|"feedback on error"| C
-    MEM --> E
-    MEM --> REP
-    REP -->|"final answer"| A
-
-    O <--> EV
-    O --> DB
-
-    classDef agent fill:#0984e3,stroke:#0652DD,color:#fff,font-weight:bold
-    classDef orch fill:#6c5ce7,stroke:#4834d4,color:#fff,font-weight:bold
-    classDef store fill:#fdcb6e,stroke:#f39c12,color:#2d3436
-    classDef infra fill:#dfe6e9,stroke:#b2bec3,color:#2d3436
-
-    class P,R,SYN,C,X,V,E,REP agent
-    class O orch
-    class MEM,DB store
-    class EV infra
+    classDef agent fill:#eef2ff,stroke:#6366f1,color:#312e81
+    classDef client fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef infrafill fill:#fef2f2,stroke:#f87171,color:#7f1d1d
+    class Prof,Res,Syn,Cod,San,Viz,Exp,Rep agent
+    class Browse,API,Screen client
+    class PG,EV,S3 infrafill
 ```
 
-<small>The orchestrator coordinates six agents that stream events live over Redis/Redpanda and log everything to Postgres. Sandbox errors feed back to the coder; best results loop through memory for N rounds.</small>
+<small>The orchestrator runs one self-repairing agent team. Sandbox errors feed the coder; the best result loops back to the Synthesist for N rounds; the Exporter is invoked only when the user asks for Pine/MQL5.</small>
 
 **Flow (one research session):**
 
